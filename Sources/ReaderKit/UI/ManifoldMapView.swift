@@ -41,6 +41,7 @@ public struct ManifoldMapView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Reset Atlas Zoom")
+                    .help("Reset Atlas Zoom")
                 }
 
                 if let activeMatch {
@@ -57,6 +58,7 @@ public struct ManifoldMapView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Center on current book")
+                    .help("Center on current book")
                 }
 
                 Button {
@@ -71,6 +73,7 @@ public struct ManifoldMapView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Sync Atlas")
+                .help("Refresh Atlas (⌘R)")
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
@@ -112,6 +115,13 @@ public struct ManifoldMapView: View {
                                 x: midX + CGFloat(work.x) * scaleX,
                                 y: midY - CGFloat(work.y) * scaleY
                             )
+                        }
+
+                        for frac in [0.45, 0.85] as [CGFloat] {
+                            let rx = scaleX * frac
+                            let ry = scaleY * frac
+                            let ringRect = CGRect(x: midX - rx, y: midY - ry, width: rx * 2, height: ry * 2)
+                            ctx.stroke(Path(ellipseIn: ringRect), with: .color(ReaderPalette.hairline.opacity(0.45)), lineWidth: 0.6)
                         }
 
                         var axes = Path()

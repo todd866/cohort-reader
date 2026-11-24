@@ -52,30 +52,30 @@ public enum EPUBHTMLComposer {
         switch theme {
         case .auto, .paper:
             return Palette(
-                bg: "#FAF8F4",
-                fg: "#181614",
-                muted: "#6C665E",
-                accent: "#553CD1",
-                border: "#DFD8CC",
-                hl: "rgba(232, 166, 72, 0.28)"
+                bg: "#FAF7F1",
+                fg: "#1B1815",
+                muted: "#6D6459",
+                accent: "#9E3424",
+                border: "#E3DACB",
+                hl: "rgba(226, 166, 72, 0.30)"
             )
         case .sepia:
             return Palette(
                 bg: "#F3EAD8",
                 fg: "#2B2218",
                 muted: "#6C5B46",
-                accent: "#8B4513",
+                accent: "#8F3923",
                 border: "#DECFAF",
                 hl: "rgba(218, 148, 56, 0.30)"
             )
         case .ink:
             return Palette(
-                bg: "#111114",
-                fg: "#ECE8DF",
-                muted: "#9C9790",
-                accent: "#8A73F7",
-                border: "#303038",
-                hl: "rgba(232, 166, 72, 0.26)"
+                bg: "#121110",
+                fg: "#F0EBE2",
+                muted: "#9B958B",
+                accent: "#E2735B",
+                border: "#2E2B27",
+                hl: "rgba(226, 166, 72, 0.26)"
             )
         }
     }
@@ -162,10 +162,14 @@ public enum EPUBHTMLComposer {
           }
           img, svg { max-height: 74vh !important; }
         """ : """
-          html, body {
+          html {
+            margin: 0 !important;
+            padding: 0 !important;
+          }
+          body {
             margin: 0 auto !important;
-            padding: 18px var(--cr-pad-x) 88px var(--cr-pad-x) !important;
-            max-width: 68ch !important;
+            padding: 24px var(--cr-pad-x) 88px var(--cr-pad-x) !important;
+            max-width: 660px !important;
           }
         """
 
@@ -223,6 +227,17 @@ public enum EPUBHTMLComposer {
             padding: 0 2px;
             cursor: pointer;
           }
+          .cohort-find-hit {
+            background: rgba(235, 190, 80, 0.38);
+            border-radius: 2px;
+            padding: 0 1px;
+          }
+          .cohort-find-active {
+            background: var(--cr-accent);
+            color: #ffffff;
+            border-radius: 2px;
+            padding: 0 2px;
+          }
         </style>
         """
 
@@ -259,6 +274,97 @@ public enum EPUBHTMLComposer {
               span.className = 'cohort-highlight';
               return span;
             });
+          };
+
+          let findHits = [];
+          let findIdx = -1;
+          let lastFindQuery = '';
+
+          window.__cohortClearFind = function() {
+            const old = document.querySelectorAll('.cohort-find-hit');
+            for (const el of old) {
+              const txt = document.createTextNode(el.textContent || '');
+              if (el.parentNode) el.parentNode.replaceChild(txt, el);
+            }
+            if (document.body) document.body.normalize();
+            findHits = [];
+            findIdx = -1;
+            lastFindQuery = '';
+            post('findStatus', { current: 0, total: 0 });
+          };
+
+          window.__cohortFind = function(query, direction) {
+            const q = String(query || '').trim();
+            if (!q || !document.body) {
+              window.__cohortClearFind();
+              return;
+            }
+            const dir = direction === -1 ? -1 : 1;
+            if (q.toLowerCase() !== lastFindQuery.toLowerCase()) {
+              window.__cohortClearFind();
+              lastFindQuery = q;
+              const lowerQ = q.toLowerCase();
+              const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+              const matches = [];
+              for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+                const raw = n.data || '';
+                const low = raw.toLowerCase();
+                let pos = 0;
+                while (matches.length < 250) {
+                  const idx = low.indexOf(lowerQ, pos);
+                  if (idx < 0) break;
+                  matches.push({ node: n, from: idx, to: idx + lowerQ.length });
+                  pos = idx + lowerQ.length;
+                }
+              }
+              matches.sort((a, b) => a.node === b.node ? b.from - a.from : 0);
+              for (const m of matches.reverse()) {
+                if (!m.node.parentNode) continue;
+                const tail = m.node.splitText(m.from);
+                tail.splitText(m.to - m.from);
+                const span = document.createElement('span');
+                span.className = 'cohort-find-hit';
+                tail.parentNode.replaceChild(span, tail);
+                span.appendChild(tail);
+              }
+              findHits = Array.from(document.querySelectorAll('.cohort-find-hit'));
+              findIdx = findHits.length ? 0 : -1;
+            } else if (findHits.length > 0) {
+              findHits.forEach(el => el.classList.remove('cohort-find-active'));
+              findIdx = ((findIdx + dir) % findHits.length + findHits.length) % findHits.length;
+            }
+            if (findIdx >= 0 && findHits[findIdx]) {
+              const activeEl = findHits[findIdx];
+              activeEl.classList.add('cohort-find-active');
+              activeEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+            }
+            post('findStatus', { current: findHits.length ? (findIdx + 1) : 0, total: findHits.length });
+          };
+
+          window.__cohortScrollBy = function(deltaY) {
+            userInteracted = true;
+            if (IS_PAGINATED) {
+              stepPage(deltaY >= 0 ? 1 : -1);
+            } else {
+              window.scrollBy({ top: Number(deltaY) || 0, behavior: 'smooth' });
+            }
+          };
+
+          window.__cohortJumpEdge = function(edge) {
+            userInteracted = true;
+            if (edge === 'bottom') {
+              if (IS_PAGINATED && document.body) {
+                document.body.scrollTo({ left: Math.max(0, document.body.scrollWidth - window.innerWidth), behavior: 'smooth' });
+              } else {
+                window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+              }
+            } else {
+              if (IS_PAGINATED && document.body) {
+                document.body.scrollTo({ left: 0, behavior: 'smooth' });
+              } else {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            }
           };
 
           function fold(c) {
@@ -409,19 +515,28 @@ public enum EPUBHTMLComposer {
           document.addEventListener('keydown', function(ev) {
             if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
             const tag = ev.target && ev.target.tagName ? ev.target.tagName.toLowerCase() : '';
-            if (tag === 'input' || tag === 'textarea') return;
-            if (ev.key === 'ArrowRight' || (ev.key === ' ' && !ev.shiftKey)) {
+            if (tag === 'input' || tag === 'textarea' || (ev.target && ev.target.isContentEditable)) return;
+            if (ev.key === 'ArrowRight' || (ev.key === ' ' && !ev.shiftKey) || ev.key === 'l') {
               ev.preventDefault();
               stepPage(1);
-            } else if (ev.key === 'ArrowLeft' || (ev.key === ' ' && ev.shiftKey)) {
+            } else if (ev.key === 'ArrowLeft' || (ev.key === ' ' && ev.shiftKey) || ev.key === 'h') {
               ev.preventDefault();
               stepPage(-1);
-            } else if (ev.key === 'j' && !IS_PAGINATED) {
-              userInteracted = true;
-              window.scrollBy({ top: 120, behavior: 'smooth' });
-            } else if (ev.key === 'k' && !IS_PAGINATED) {
-              userInteracted = true;
-              window.scrollBy({ top: -120, behavior: 'smooth' });
+            } else if (ev.key === 'j' || ev.key === 'ArrowDown') {
+              if (IS_PAGINATED) { ev.preventDefault(); stepPage(1); }
+              else { userInteracted = true; window.scrollBy({ top: 140, behavior: 'smooth' }); }
+            } else if (ev.key === 'k' || ev.key === 'ArrowUp') {
+              if (IS_PAGINATED) { ev.preventDefault(); stepPage(-1); }
+              else { userInteracted = true; window.scrollBy({ top: -140, behavior: 'smooth' }); }
+            } else if (ev.key === 'g' && !ev.shiftKey) {
+              ev.preventDefault();
+              window.__cohortJumpEdge('top');
+            } else if (ev.key === 'G' || (ev.key === 'g' && ev.shiftKey)) {
+              ev.preventDefault();
+              window.__cohortJumpEdge('bottom');
+            } else if (['?', '/', ':', 'f', 't', 'm', 'p', 'a', '[', ']', 'H', 'Escape'].includes(ev.key)) {
+              ev.preventDefault();
+              post('keyCommand', { key: ev.key });
             }
           });
 

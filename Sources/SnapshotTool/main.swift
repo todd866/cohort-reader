@@ -78,6 +78,20 @@ enum SnapshotRunner {
             SettingsSheet(vm: vm)
         }
 
+        // 8b. Command Palette & Shortcuts HUD (desktop)
+        vm.selectedTab = .shelf
+        vm.openCommandPalette()
+        try renderScenario("command-palette", targets: [("macos", CGSize(width: 1280, height: 800))], outDir: outDir) {
+            ReaderRootView(vm: vm)
+        }
+        vm.closeCommandPalette()
+
+        vm.isShortcutsHUDPresented = true
+        try renderScenario("shortcuts-hud", targets: [("macos", CGSize(width: 1280, height: 800))], outDir: outDir) {
+            ReaderRootView(vm: vm)
+        }
+        vm.isShortcutsHUDPresented = false
+
         // 9. PDF Reader + Placed Vector Stamp Preview (clean-room synthetic PDF)
         let tmpPDFURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("cohort-snapshot-\(UUID().uuidString).pdf")

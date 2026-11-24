@@ -71,6 +71,36 @@ public struct FootnotePreview: Identifiable, Sendable, Hashable {
     }
 }
 
+public enum CommandPaletteItemKind: Sendable, Hashable {
+    case book(BookItem)
+    case action(String)
+}
+
+public struct CommandPaletteItem: Identifiable, Sendable, Hashable {
+    public var id: String
+    public var title: String
+    public var subtitle: String
+    public var symbol: String
+    public var shortcut: String?
+    public var kind: CommandPaletteItemKind
+
+    public init(
+        id: String,
+        title: String,
+        subtitle: String,
+        symbol: String,
+        shortcut: String? = nil,
+        kind: CommandPaletteItemKind
+    ) {
+        self.id = id
+        self.title = title
+        self.subtitle = subtitle
+        self.symbol = symbol
+        self.shortcut = shortcut
+        self.kind = kind
+    }
+}
+
 public enum ActiveReaderSheet: Identifiable, Sendable {
     case settings
     case marginNote(MarginNote)
@@ -200,6 +230,28 @@ public final class ReaderViewModel {
     public var pdfThumbnailPageInput: String = ""
     public var tocShowsPDFThumbnails: Bool = false
 
+    // Keyboard-First Chrome, Command Palette, & Inline Find
+    public var isSidebarCollapsed: Bool = false
+    public var isCommandPalettePresented: Bool = false
+    public var commandPaletteQuery: String = ""
+    public var commandPaletteSelectionIndex: Int = 0
+    public var isShortcutsHUDPresented: Bool = false
+    public var isInlineFindPresented: Bool = false
+    public var inlineFindQuery: String = ""
+    public var inlineFindActiveIndex: Int = 0
+    public var inlineFindTotalCount: Int = 0
+    public var inlineFindActionToken: Int = 0
+    public var inlineFindDirection: Int = 1
+    public var isGoToPagePresented: Bool = false
+    public var goToPageQuery: String = ""
+    public var epubCommandToken: Int = 0
+    public var epubPendingCommand: String?
+    public var pdfCommandToken: Int = 0
+    public var pdfPendingCommand: String?
+    public var focusedShelfBookId: String?
+    public var selectedSearchIndex: Int?
+    public var searchFocusToken: Int = 0
+
     // Search
     public var searchQuery: String = ""
     public var searchScope: SearchScope = .all
@@ -254,6 +306,7 @@ public final class ReaderViewModel {
         }
         self.pdfAutoCropEnabled = defaults.bool(forKey: "cohortReader.pdfAutoCropEnabled")
         self.pdfTwoUpMode = defaults.bool(forKey: "cohortReader.pdfTwoUpMode")
+        self.isSidebarCollapsed = defaults.bool(forKey: "cohortReader.sidebarCollapsed")
         if let savedDeletedSigs = defaults.stringArray(forKey: "cohortReader.deletedSignatureIds") {
             self.deletedSignatureIds = Set(savedDeletedSigs)
         }
@@ -289,6 +342,7 @@ public final class ReaderViewModel {
         defaults.set(pdfAppearance.rawValue, forKey: "cohortReader.pdfAppearance")
         defaults.set(pdfAutoCropEnabled, forKey: "cohortReader.pdfAutoCropEnabled")
         defaults.set(pdfTwoUpMode, forKey: "cohortReader.pdfTwoUpMode")
+        defaults.set(isSidebarCollapsed, forKey: "cohortReader.sidebarCollapsed")
         defaults.set(Array(deletedSignatureIds), forKey: "cohortReader.deletedSignatureIds")
     }
 
@@ -2122,5 +2176,664 @@ public final class ReaderViewModel {
 
     public func selectedMapWork() -> ManifoldReaderWork? {
         manifoldWorks.first(where: { $0.workId == selectedMapWorkId }) ?? manifoldWorks.first
+    }
+
+    // MARK: - Keyboard-First Navigation, Command Palette, Inline Find, & Unified Scale
+
+    public func toggleSidebar() {
+        isSidebarCollapsed.toggle()
+        savePreferences()
+    }
+
+    public func openCommandPalette() {
+        isShortcutsHUDPresented = false
+        isGoToPagePresented = false
+        commandPaletteQuery = ""
+        commandPaletteSelectionIndex = 0
+        isCommandPalettePresented = true
+    }
+
+    public func closeCommandPalette() {
+        isCommandPalettePresented = false
+        commandPaletteQuery = ""
+        commandPaletteSelectionIndex = 0
+    }
+
+    public func toggleShortcutsHUD() {
+        if isShortcutsHUDPresented {
+            isShortcutsHUDPresented = false
+        } else {
+            isCommandPalettePresented = false
+            isGoToPagePresented = false
+            isShortcutsHUDPresented = true
+        }
+    }
+
+    public func openInlineFind() {
+        guard activeBook != nil else {
+            selectedTab = .search
+            searchFocusToken += 1
+            return
+        }
+        isCommandPalettePresented = false
+        isShortcutsHUDPresented = false
+        isGoToPagePresented = false
+        selectedTab = .read
+        isReaderChromeHidden = false
+        isInlineFindPresented = true
+        if !inlineFindQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            inlineFindDirection = 1
+            inlineFindActionToken += 1
+        }
+    }
+
+    public func closeInlineFind() {
+        isInlineFindPresented = false
+        inlineFindActiveIndex = 0
+        inlineFindTotalCount = 0
+        activePDFSearchHighlight = nil
+        inlineFindActionToken += 1
+    }
+
+    public func updateInlineFindQuery(_ query: String) {
+        inlineFindQuery = query
+        inlineFindDirection = 1
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        activePDFSearchHighlight = (activePDFURL != nil && !trimmed.isEmpty) ? trimmed : nil
+        inlineFindActionToken += 1
+    }
+
+    public func stepInlineFind(delta: Int) {
+        guard !inlineFindQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        inlineFindDirection = delta < 0 ? -1 : 1
+        inlineFindActionToken += 1
+    }
+
+    public func openGoToPage() {
+        guard activeBook != nil else { return }
+        isCommandPalettePresented = false
+        isShortcutsHUDPresented = false
+        isInlineFindPresented = false
+        selectedTab = .read
+        isReaderChromeHidden = false
+        if activePDFURL != nil {
+            goToPageQuery = "\(activePDFPageIndex + 1)"
+        } else if activeEPUB != nil {
+            goToPageQuery = "\(activeEPUBSpineIndex + 1)"
+        } else {
+            goToPageQuery = ""
+        }
+        isGoToPagePresented = true
+    }
+
+    public func closeGoToPage() {
+        isGoToPagePresented = false
+    }
+
+    public func submitGoToPage() async {
+        let raw = goToPageQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        isGoToPagePresented = false
+        guard !raw.isEmpty else { return }
+        if let meta = activePDFMetadata, activePDFURL != nil {
+            if let pageNum = Int(raw), pageNum >= 1, pageNum <= meta.pageCount {
+                await selectPDFPage(pageNum - 1, recordJump: true)
+            } else {
+                showToast("Enter page 1–\(max(1, meta.pageCount))")
+            }
+        } else if let doc = activeEPUB {
+            if let chNum = Int(raw), chNum >= 1, chNum <= doc.spineHrefs.count {
+                await selectEPUBSpine(chNum - 1)
+            } else if let hit = doc.toc.first(where: { $0.title.localizedCaseInsensitiveContains(raw) }) {
+                await selectEPUBSpine(hit.spineIndex)
+            } else {
+                showToast("No chapter matched '\(raw)'")
+            }
+        }
+    }
+
+    public func increaseReadingScale() {
+        if activePDFURL != nil {
+            zoomInPDF()
+            showToast("Zoom \(Int((pdfZoomScale * 100).rounded()))%")
+        } else if activeEPUB != nil {
+            typography.fontSize = min(28, typography.fontSize + 1)
+            saveTypography()
+            showToast("Text size \(Int(typography.fontSize)) pt")
+        }
+    }
+
+    public func decreaseReadingScale() {
+        if activePDFURL != nil {
+            zoomOutPDF()
+            showToast("Zoom \(Int((pdfZoomScale * 100).rounded()))%")
+        } else if activeEPUB != nil {
+            typography.fontSize = max(14, typography.fontSize - 1)
+            saveTypography()
+            showToast("Text size \(Int(typography.fontSize)) pt")
+        }
+    }
+
+    public func resetReadingScale() {
+        if activePDFURL != nil {
+            resetPDFZoom()
+            showToast("Fit page width")
+        } else if activeEPUB != nil {
+            typography.fontSize = 18
+            saveTypography()
+            showToast("Text size 18 pt")
+        }
+    }
+
+    public func cycleActiveReadingTheme() {
+        if activePDFURL != nil {
+            cyclePDFAppearance()
+            showToast("PDF paper: \(pdfAppearance.label)")
+        } else {
+            let all = ReaderTheme.allCases
+            if let idx = all.firstIndex(of: typography.theme) {
+                typography.theme = all[(idx + 1) % all.count]
+            } else {
+                typography.theme = .auto
+            }
+            saveTypography()
+            showToast("Theme: \(typography.theme.rawValue)")
+        }
+    }
+
+    public func toggleEPUBReadingFlow() {
+        typography.readingFlow = (typography.readingFlow == .paginated) ? .scroll : .paginated
+        saveTypography()
+        showToast("EPUB flow: \(typography.readingFlow.rawValue)")
+    }
+
+    public func selectTabByNumber(_ oneBasedIndex: Int) async {
+        let idx = oneBasedIndex - 1
+        guard idx >= 0, idx < openTabs.count else { return }
+        await selectTab(id: openTabs[idx].id)
+    }
+
+    @discardableResult
+    public func handleEscapeKey() -> Bool {
+        if isCommandPalettePresented {
+            closeCommandPalette()
+            return true
+        }
+        if isShortcutsHUDPresented {
+            isShortcutsHUDPresented = false
+            return true
+        }
+        if isGoToPagePresented {
+            closeGoToPage()
+            return true
+        }
+        if isInlineFindPresented {
+            closeInlineFind()
+            return true
+        }
+        if activeSheet != nil {
+            activeSheet = nil
+            return true
+        }
+        if selectedStampId != nil {
+            selectedStampId = nil
+            return true
+        }
+        if isReaderChromeHidden {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                isReaderChromeHidden = false
+            }
+            return true
+        }
+        return false
+    }
+
+    public func commandPaletteItems() -> [CommandPaletteItem] {
+        var actions: [CommandPaletteItem] = [
+            CommandPaletteItem(id: "act:open-file", title: "Open PDF or EPUB…", subtitle: "File", symbol: "doc.badge.plus", shortcut: "⌘O", kind: .action("open-file")),
+            CommandPaletteItem(id: "act:tab-shelf", title: "Library", subtitle: "View", symbol: "books.vertical", shortcut: "⌘1", kind: .action("tab-shelf")),
+            CommandPaletteItem(id: "act:tab-read", title: "Read", subtitle: "View", symbol: "book.pages", shortcut: "⌘2", kind: .action("tab-read")),
+            CommandPaletteItem(id: "act:tab-map", title: "Atlas", subtitle: "View", symbol: "sparkles", shortcut: "⌘3", kind: .action("tab-map")),
+            CommandPaletteItem(id: "act:tab-search", title: "Search", subtitle: "View", symbol: "magnifyingglass", shortcut: "⌘4", kind: .action("tab-search")),
+            CommandPaletteItem(id: "act:toggle-sidebar", title: isSidebarCollapsed ? "Show Sidebar" : "Hide Sidebar", subtitle: "View", symbol: "sidebar.left", shortcut: "⌘\\", kind: .action("toggle-sidebar")),
+            CommandPaletteItem(id: "act:shortcuts", title: "Keyboard Shortcuts", subtitle: "Help", symbol: "keyboard", shortcut: "?", kind: .action("shortcuts")),
+            CommandPaletteItem(id: "act:settings", title: "Settings", subtitle: "App", symbol: "gearshape", shortcut: "⌘,", kind: .action("settings")),
+        ]
+        if activeBook != nil {
+            actions.append(contentsOf: [
+                CommandPaletteItem(id: "act:find", title: "Find in Document", subtitle: "Reader", symbol: "magnifyingglass", shortcut: "⌘F", kind: .action("find")),
+                CommandPaletteItem(id: "act:goto-page", title: activePDFURL != nil ? "Go to Page…" : "Go to Chapter…", subtitle: "Reader", symbol: "arrow.right.to.line", shortcut: "⌥⌘G", kind: .action("goto-page")),
+                CommandPaletteItem(id: "act:toc", title: "Contents & Thumbnails", subtitle: "Reader", symbol: "list.bullet", shortcut: "⌘T", kind: .action("toc")),
+                CommandPaletteItem(id: "act:toggle-focus", title: "Toggle Focus Mode", subtitle: "Reader", symbol: "arrow.up.left.and.arrow.down.right", shortcut: "⌘.", kind: .action("toggle-focus")),
+                CommandPaletteItem(id: "act:cycle-theme", title: "Cycle Reading Theme", subtitle: "Reader", symbol: "circle.lefthalf.filled", shortcut: "⌥⌘T", kind: .action("cycle-theme")),
+                CommandPaletteItem(id: "act:zoom-in", title: activePDFURL != nil ? "Zoom In" : "Larger Text", subtitle: "Scale", symbol: "plus.magnifyingglass", shortcut: "⌘+", kind: .action("zoom-in")),
+                CommandPaletteItem(id: "act:zoom-out", title: activePDFURL != nil ? "Zoom Out" : "Smaller Text", subtitle: "Scale", symbol: "minus.magnifyingglass", shortcut: "⌘-", kind: .action("zoom-out")),
+                CommandPaletteItem(id: "act:zoom-reset", title: activePDFURL != nil ? "Fit Page Width" : "Reset Text Size", subtitle: "Scale", symbol: "arrow.up.left.and.arrow.down.right", shortcut: "⌘0", kind: .action("zoom-reset")),
+            ])
+        }
+        if activeEPUB != nil {
+            actions.append(contentsOf: [
+                CommandPaletteItem(id: "act:typography", title: "Typography & Reading Flow", subtitle: "EPUB", symbol: "textformat.size", shortcut: "⇧⌘T", kind: .action("typography")),
+                CommandPaletteItem(id: "act:toggle-flow", title: typography.readingFlow == .paginated ? "Switch EPUB to Scroll" : "Switch EPUB to Pages", subtitle: "EPUB", symbol: "book.pages", shortcut: "⌥⌘P", kind: .action("toggle-flow")),
+            ])
+        }
+        if activePDFURL != nil {
+            actions.append(contentsOf: [
+                CommandPaletteItem(id: "act:pdf-sign", title: "Sign & Stamp PDF", subtitle: "PDF", symbol: "signature", shortcut: "⌥⌘S", kind: .action("pdf-sign")),
+                CommandPaletteItem(id: "act:pdf-crop", title: "Toggle Margin Crop", subtitle: "PDF", symbol: "crop", shortcut: "⌥⌘C", kind: .action("pdf-crop")),
+                CommandPaletteItem(id: "act:pdf-twoup", title: "Toggle Two-Page Spread", subtitle: "PDF", symbol: "rectangle.split.2x1", shortcut: "⌥⌘2", kind: .action("pdf-twoup")),
+            ])
+        }
+        if isServerConnected {
+            actions.append(CommandPaletteItem(id: "act:sync-server", title: "Sync Home Library", subtitle: "Server", symbol: "arrow.triangle.2.circlepath", shortcut: "⌘R", kind: .action("sync-server")))
+            if activeBook != nil {
+                actions.append(CommandPaletteItem(id: "act:send-inbox", title: "Send Active Document to Home Inbox", subtitle: "Sync", symbol: "paperplane", shortcut: "⇧⌘U", kind: .action("send-inbox")))
+            }
+        }
+
+        let openTabIds = Set(openTabs.map(\.id))
+        var seenBookIds: Set<String> = []
+        var bookItems: [CommandPaletteItem] = []
+        for tab in openTabs {
+            seenBookIds.insert(tab.book.id)
+            bookItems.append(
+                CommandPaletteItem(
+                    id: "book:\(tab.book.id)",
+                    title: tab.book.title,
+                    subtitle: "Open Tab · \(tab.book.format.label)",
+                    symbol: tab.book.format == .epub ? "book.closed.fill" : "doc.text.fill",
+                    kind: .book(tab.book)
+                )
+            )
+        }
+        for book in books where !seenBookIds.contains(book.id) {
+            seenBookIds.insert(book.id)
+            bookItems.append(
+                CommandPaletteItem(
+                    id: "book:\(book.id)",
+                    title: book.title,
+                    subtitle: openTabIds.contains(book.id) ? "Open Tab" : book.shortCitation,
+                    symbol: book.format == .epub ? "book.closed" : "doc.text",
+                    kind: .book(book)
+                )
+            )
+        }
+
+        let q = commandPaletteQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else {
+            return Array((actions.prefix(6) + bookItems.prefix(8)).prefix(14))
+        }
+
+        func score(_ item: CommandPaletteItem) -> Int? {
+            let t = item.title.lowercased()
+            let s = item.subtitle.lowercased()
+            if t.hasPrefix(q) { return 3 }
+            if t.contains(q) { return 2 }
+            if s.contains(q) { return 1 }
+            if case .book(let b) = item.kind, (b.canonicalId?.lowercased().contains(q) ?? false) {
+                return 1
+            }
+            return nil
+        }
+
+        let combined = (actions + bookItems).compactMap { item -> (Int, CommandPaletteItem)? in
+            guard let sc = score(item) else { return nil }
+            return (sc, item)
+        }
+        return combined
+            .sorted { a, b in
+                if a.0 != b.0 { return a.0 > b.0 }
+                return a.1.title.localizedCaseInsensitiveCompare(b.1.title) == .orderedAscending
+            }
+            .map(\.1)
+            .prefix(16)
+            .map { $0 }
+    }
+
+    public func moveCommandPaletteSelection(delta: Int) {
+        let items = commandPaletteItems()
+        guard !items.isEmpty else {
+            commandPaletteSelectionIndex = 0
+            return
+        }
+        let next = ((commandPaletteSelectionIndex + delta) % items.count + items.count) % items.count
+        commandPaletteSelectionIndex = next
+    }
+
+    public func executeSelectedCommandPaletteItem() async {
+        let items = commandPaletteItems()
+        guard !items.isEmpty else { return }
+        let idx = min(max(0, commandPaletteSelectionIndex), items.count - 1)
+        await executeCommandPaletteItem(items[idx])
+    }
+
+    public func executeCommandPaletteItem(_ item: CommandPaletteItem) async {
+        closeCommandPalette()
+        switch item.kind {
+        case .book(let book):
+            await openBook(book, switchTab: true)
+        case .action(let actionId):
+            switch actionId {
+            case "open-file":
+                #if os(macOS)
+                openExternalFileWithPanel()
+                #else
+                requestFileImport()
+                #endif
+            case "tab-shelf": selectedTab = .shelf
+            case "tab-read": selectedTab = .read
+            case "tab-map": selectedTab = .map
+            case "tab-search":
+                selectedTab = .search
+                searchFocusToken += 1
+            case "toggle-sidebar": toggleSidebar()
+            case "shortcuts": isShortcutsHUDPresented = true
+            case "settings": transitionSheet(to: .settings)
+            case "find": openInlineFind()
+            case "goto-page": openGoToPage()
+            case "toc": transitionSheet(to: .toc)
+            case "toggle-focus":
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isReaderChromeHidden.toggle()
+                }
+            case "cycle-theme": cycleActiveReadingTheme()
+            case "zoom-in": increaseReadingScale()
+            case "zoom-out": decreaseReadingScale()
+            case "zoom-reset": resetReadingScale()
+            case "typography": transitionSheet(to: .typography)
+            case "toggle-flow": toggleEPUBReadingFlow()
+            case "pdf-sign": transitionSheet(to: .pdfSign)
+            case "pdf-crop": togglePDFAutoCrop()
+            case "pdf-twoup": togglePDFTwoUpMode()
+            case "sync-server": await syncServerCatalog(silent: false)
+            case "send-inbox": await sendActiveDocumentToHomeInbox()
+            default: break
+            }
+        }
+    }
+
+    @discardableResult
+    public func handleSingleKeyCommand(_ key: String, shift: Bool = false) -> Bool {
+        if key == "Escape" {
+            return handleEscapeKey()
+        }
+        if key == "?" {
+            toggleShortcutsHUD()
+            return true
+        }
+        if isCommandPalettePresented || isShortcutsHUDPresented || isInlineFindPresented || isGoToPagePresented || activeSheet != nil {
+            return false
+        }
+        if key == "/" {
+            if selectedTab == .read && activeBook != nil {
+                openInlineFind()
+            } else {
+                selectedTab = .search
+                searchFocusToken += 1
+            }
+            return true
+        }
+        if key == ":" && selectedTab == .read && activeBook != nil {
+            openGoToPage()
+            return true
+        }
+
+        if selectedTab == .shelf {
+            switch key {
+            case "j", "ArrowDown", "l", "ArrowRight":
+                moveShelfFocus(delta: 1)
+                return true
+            case "k", "ArrowUp", "h", "ArrowLeft":
+                moveShelfFocus(delta: -1)
+                return true
+            case "Return", "Enter", "\r":
+                return openFocusedShelfBook()
+            default:
+                return false
+            }
+        }
+
+        if selectedTab == .search {
+            switch key {
+            case "j", "ArrowDown":
+                moveSearchSelection(delta: 1)
+                return true
+            case "k", "ArrowUp":
+                moveSearchSelection(delta: -1)
+                return true
+            case "Return", "Enter", "\r":
+                return openSelectedSearchItem()
+            default:
+                return false
+            }
+        }
+
+        if selectedTab == .map {
+            if key == "a", let activeMatch = activeBook.flatMap({ manifoldWork(for: $0) }) {
+                focusWorkInAtlas(activeMatch)
+                return true
+            }
+            return false
+        }
+
+        guard selectedTab == .read && activeBook != nil else { return false }
+        switch key {
+        case "f":
+            withAnimation(.easeInOut(duration: 0.18)) { isReaderChromeHidden.toggle() }
+            return true
+        case "t":
+            cycleActiveReadingTheme()
+            return true
+        case "m":
+            tocSegment = 1
+            activeSheet = .toc
+            return true
+        case "p":
+            guard activeEPUB != nil else { return false }
+            toggleEPUBReadingFlow()
+            return true
+        case "c":
+            guard activePDFURL != nil else { return false }
+            togglePDFAutoCrop()
+            return true
+        case "2":
+            guard activePDFURL != nil else { return false }
+            togglePDFTwoUpMode()
+            return true
+        case "a":
+            guard let b = activeBook, manifoldWork(for: b) != nil else { return false }
+            focusBookInAtlas(b)
+            return true
+        case "s":
+            guard activePDFURL != nil else { return false }
+            activeSheet = .pdfSign
+            return true
+        case "[":
+            guard activePDFURL != nil, !pdfJumpBackStack.isEmpty else { return false }
+            Task { await self.jumpBackInPDF() }
+            return true
+        case "]":
+            guard activePDFURL != nil, !pdfJumpForwardStack.isEmpty else { return false }
+            Task { await self.jumpForwardInPDF() }
+            return true
+        case "H":
+            let quote = activeSelectionText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !quote.isEmpty else { return false }
+            Task { await self.saveQuickHighlight(quote: quote) }
+            return true
+        case "h", "ArrowLeft":
+            if activeEPUB != nil {
+                if typography.readingFlow == .paginated {
+                    epubPendingCommand = "pagePrev"
+                    epubCommandToken += 1
+                } else {
+                    Task { await self.selectEPUBSpine(self.activeEPUBSpineIndex - 1) }
+                }
+                return true
+            } else if activePDFURL != nil {
+                Task { await self.stepPDFColumn(delta: -1) }
+                return true
+            }
+            return false
+        case "l", "ArrowRight":
+            if activeEPUB != nil {
+                if typography.readingFlow == .paginated {
+                    epubPendingCommand = "pageNext"
+                    epubCommandToken += 1
+                } else {
+                    Task { await self.selectEPUBSpine(self.activeEPUBSpineIndex + 1) }
+                }
+                return true
+            } else if activePDFURL != nil {
+                Task { await self.stepPDFColumn(delta: 1) }
+                return true
+            }
+            return false
+        case "j", "ArrowDown":
+            if activeEPUB != nil {
+                epubPendingCommand = "scrollDown"
+                epubCommandToken += 1
+                return true
+            } else if activePDFURL != nil {
+                pdfPendingCommand = "scrollDown"
+                pdfCommandToken += 1
+                return true
+            }
+            return false
+        case "k", "ArrowUp":
+            if activeEPUB != nil {
+                epubPendingCommand = "scrollUp"
+                epubCommandToken += 1
+                return true
+            } else if activePDFURL != nil {
+                pdfPendingCommand = "scrollUp"
+                pdfCommandToken += 1
+                return true
+            }
+            return false
+        case " ":
+            if activeEPUB != nil {
+                epubPendingCommand = shift ? "pagePrev" : "pageNext"
+                epubCommandToken += 1
+                return true
+            } else if activePDFURL != nil {
+                pdfPendingCommand = shift ? "pageUp" : "pageDown"
+                pdfCommandToken += 1
+                return true
+            }
+            return false
+        case "g":
+            if activeEPUB != nil {
+                epubPendingCommand = "jumpTop"
+                epubCommandToken += 1
+                return true
+            } else if activePDFURL != nil {
+                pdfPendingCommand = "jumpTop"
+                pdfCommandToken += 1
+                return true
+            }
+            return false
+        case "G":
+            if activeEPUB != nil {
+                epubPendingCommand = "jumpBottom"
+                epubCommandToken += 1
+                return true
+            } else if activePDFURL != nil {
+                pdfPendingCommand = "jumpBottom"
+                pdfCommandToken += 1
+                return true
+            }
+            return false
+        default:
+            return false
+        }
+    }
+
+    public func moveShelfFocus(delta: Int) {
+        let items = filteredShelfBooks
+        guard !items.isEmpty else {
+            focusedShelfBookId = nil
+            return
+        }
+        if let cur = focusedShelfBookId, let idx = items.firstIndex(where: { $0.id == cur }) {
+            let next = ((idx + delta) % items.count + items.count) % items.count
+            focusedShelfBookId = items[next].id
+        } else {
+            focusedShelfBookId = delta >= 0 ? items.first?.id : items.last?.id
+        }
+    }
+
+    @discardableResult
+    public func openFocusedShelfBook() -> Bool {
+        let target = focusedShelfBookId.flatMap { id in filteredShelfBooks.first(where: { $0.id == id }) }
+            ?? (activeShelfFilter == "All" ? continueReadingBook : nil)
+            ?? filteredShelfBooks.first
+        guard let target else { return false }
+        Task { await self.openBook(target, switchTab: true) }
+        return true
+    }
+
+    private func searchNavigationPools() -> (books: [BookItem], works: [ManifoldReaderWork]) {
+        let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let base: [BookItem]
+        if q.isEmpty {
+            base = books
+        } else if !serverSearchResults.isEmpty {
+            base = serverSearchResults
+        } else {
+            base = books.filter {
+                $0.title.lowercased().contains(q)
+                    || $0.author.lowercased().contains(q)
+                    || $0.genre.lowercased().contains(q)
+                    || ($0.canonicalId?.lowercased().contains(q) ?? false)
+                    || $0.summary.lowercased().contains(q)
+            }
+        }
+        let filteredBooks: [BookItem]
+        switch searchScope {
+        case .all: filteredBooks = base
+        case .books: filteredBooks = base.filter { $0.format == .epub || ($0.canonicalId?.hasPrefix("isbn:") ?? false) || ($0.canonicalId?.hasPrefix("gutenberg:") ?? false) }
+        case .papers: filteredBooks = base.filter { $0.format == .article || ($0.canonicalId?.hasPrefix("doi:") ?? false) || ($0.canonicalId?.hasPrefix("pmid:") ?? false) || ($0.canonicalId?.hasPrefix("arxiv:") ?? false) }
+        case .offline: filteredBooks = base.filter(\.isOfflineCached)
+        }
+
+        let pool = recommendedDiscoveryWorks
+        let filteredWorks: [ManifoldReaderWork] = q.isEmpty ? Array(pool.prefix(12)) : pool.filter {
+            $0.title.lowercased().contains(q)
+                || $0.creator.lowercased().contains(q)
+                || $0.summary.lowercased().contains(q)
+                || ($0.subject?.lowercased().contains(q) ?? false)
+                || $0.workId.lowercased().contains(q)
+        }
+        return (filteredBooks, filteredWorks)
+    }
+
+    public func moveSearchSelection(delta: Int) {
+        let pools = searchNavigationPools()
+        let total = pools.books.count + pools.works.count
+        guard total > 0 else {
+            selectedSearchIndex = nil
+            return
+        }
+        if let cur = selectedSearchIndex {
+            selectedSearchIndex = ((cur + delta) % total + total) % total
+        } else {
+            selectedSearchIndex = delta >= 0 ? 0 : (total - 1)
+        }
+    }
+
+    @discardableResult
+    public func openSelectedSearchItem() -> Bool {
+        let pools = searchNavigationPools()
+        let total = pools.books.count + pools.works.count
+        guard total > 0 else { return false }
+        let idx = min(max(0, selectedSearchIndex ?? 0), total - 1)
+        if idx < pools.books.count {
+            let book = pools.books[idx]
+            Task { await self.openBook(book, switchTab: true) }
+            return true
+        }
+        let work = pools.works[idx - pools.books.count]
+        Task { await self.openOrInspect(work) }
+        return true
     }
 }

@@ -71,14 +71,41 @@ public struct SearchLibraryView: View {
                             .font(.system(size: 13.5))
                             .foregroundStyle(vm.searchQuery.isEmpty ? ReaderPalette.secondary : ReaderPalette.label)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                        #if os(macOS)
+                        if vm.searchQuery.isEmpty {
+                            KeycapBadge("/")
+                        }
+                        #endif
                     } else {
-                        TextField("Search library and discoveries", text: $vm.searchQuery)
-                            .font(.system(size: 13.5))
-                            .onSubmit { Task { await vm.runSearch() } }
+                        InlineCommandTextField(
+                            placeholder: "Search library and discoveries",
+                            text: vm.searchQuery,
+                            fontSize: 13.5,
+                            focusToken: vm.searchFocusToken,
+                            onTextChange: {
+                                vm.searchQuery = $0
+                                vm.selectedSearchIndex = nil
+                            },
+                            onMoveUp: { vm.moveSearchSelection(delta: -1) },
+                            onMoveDown: { vm.moveSearchSelection(delta: 1) },
+                            onSubmit: {
+                                if vm.selectedSearchIndex != nil {
+                                    _ = vm.openSelectedSearchItem()
+                                } else {
+                                    Task { await vm.runSearch() }
+                                }
+                            }
+                        )
+                        #if os(macOS)
+                        if vm.searchQuery.isEmpty {
+                            KeycapBadge("/")
+                        }
+                        #endif
                         if !vm.searchQuery.isEmpty {
                             Button {
                                 vm.searchQuery = ""
                                 vm.serverSearchResults = []
+                                vm.selectedSearchIndex = nil
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
                                     .font(.system(size: 13))
@@ -170,7 +197,8 @@ public struct SearchLibraryView: View {
 
             ReaderScrollContainer {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(visibleResults) { book in
+                    ForEach(Array(visibleResults.enumerated()), id: \.element.id) { idx, book in
+                        let isRowSelected = !isSnapshot && vm.selectedSearchIndex == idx
                         Button {
                             Task { await vm.openBook(book) }
                         } label: {
@@ -210,6 +238,12 @@ public struct SearchLibraryView: View {
                             }
                             .padding(.horizontal, 14)
                             .padding(.vertical, 8)
+                            .background(isRowSelected ? ReaderPalette.accent.opacity(0.10) : Color.clear)
+                            .overlay(alignment: .leading) {
+                                if isRowSelected {
+                                    Rectangle().fill(ReaderPalette.accent).frame(width: 3)
+                                }
+                            }
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -225,7 +259,9 @@ public struct SearchLibraryView: View {
                             .padding(.top, 14)
                             .padding(.bottom, 6)
 
-                        ForEach(discoveries) { work in
+                        ForEach(Array(discoveries.enumerated()), id: \.element.workId) { dIdx, work in
+                            let globalIdx = visibleResults.count + dIdx
+                            let isRowSelected = !isSnapshot && vm.selectedSearchIndex == globalIdx
                             Button {
                                 Task { await vm.openOrInspect(work) }
                             } label: {
@@ -250,15 +286,23 @@ public struct SearchLibraryView: View {
                                             .foregroundStyle(ReaderPalette.secondary)
                                             .monospacedDigit()
                                     }
-                                    Text((work.epubURL != nil || work.openAccessURL != nil) ? "Free" : "BYO")
-                                        .font(.system(size: 10.5, weight: .medium))
-                                        .foregroundStyle((work.epubURL != nil || work.openAccessURL != nil) ? ReaderPalette.accent : ReaderPalette.tvAmber)
-                                        .padding(.horizontal, 7)
-                                        .padding(.vertical, 2)
-                                        .background(ReaderPalette.surface, in: Capsule())
+                                    if work.epubURL != nil || work.openAccessURL != nil {
+                                        Text("Open")
+                                            .font(.system(size: 10.5, weight: .medium))
+                                            .foregroundStyle(ReaderPalette.accent)
+                                            .padding(.horizontal, 7)
+                                            .padding(.vertical, 2)
+                                            .background(ReaderPalette.surface, in: Capsule())
+                                    }
                                 }
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 8)
+                                .background(isRowSelected ? ReaderPalette.accent.opacity(0.10) : Color.clear)
+                                .overlay(alignment: .leading) {
+                                    if isRowSelected {
+                                        Rectangle().fill(ReaderPalette.accent).frame(width: 3)
+                                    }
+                                }
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)

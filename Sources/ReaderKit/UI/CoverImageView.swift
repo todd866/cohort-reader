@@ -226,7 +226,7 @@ public struct BookCoverView: View {
                 TypographicCoverView(book: book, width: width, height: height)
             }
         }
-        .shadow(color: Color.black.opacity(0.12), radius: 3, x: 0, y: 1.5)
+        .shadow(color: Color.black.opacity(0.18), radius: 5, x: 0, y: 2.5)
         .task(id: "\(remoteURL?.absoluteString ?? "")|\(reloadToken)") {
             await cache.loadIfNeeded(url: remoteURL, key: coverKey, maxPixelSize: 320)
         }

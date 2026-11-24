@@ -8,6 +8,27 @@ import AppKit
 private final class CohortAppDelegate: NSObject, NSApplicationDelegate {
     static var pendingURLs: [URL] = []
     static var onOpenURLs: (([URL]) -> Void)?
+    static var onKeyEvent: ((UInt16, UInt, String?) -> Bool)?
+    private nonisolated(unsafe) var keyMonitor: Any?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let keyCode = event.keyCode
+            let modRaw = event.modifierFlags.rawValue
+            let chars = event.characters
+            let handled = MainActor.assumeIsolated {
+                Self.onKeyEvent?(keyCode, modRaw, chars) ?? false
+            }
+            return handled ? nil : event
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
+    }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         let fileURLs = urls.filter(\.isFileURL)
@@ -41,6 +62,9 @@ struct CohortReaderApp: App {
                 }
             }
         }
+        CohortAppDelegate.onKeyEvent = { keyCode, modRaw, chars in
+            Self.handleLocalKeyEvent(keyCode: keyCode, modifierRawValue: modRaw, characters: chars, vm: model)
+        }
         if !CohortAppDelegate.pendingURLs.isEmpty {
             let queued = CohortAppDelegate.pendingURLs
             CohortAppDelegate.pendingURLs.removeAll()
@@ -54,6 +78,53 @@ struct CohortReaderApp: App {
         #endif
         _vm = State(initialValue: model)
     }
+
+    #if os(macOS)
+    @MainActor
+    private static func handleLocalKeyEvent(
+        keyCode: UInt16,
+        modifierRawValue: UInt,
+        characters: String?,
+        vm: ReaderViewModel
+    ) -> Bool {
+        let mods = NSEvent.ModifierFlags(rawValue: modifierRawValue).intersection([.command, .option, .control, .shift])
+
+        // ⌃Tab / ⌃⇧Tab tab cycling
+        if keyCode == 48 && mods.contains(.control) && !mods.contains(.command) && !mods.contains(.option) {
+            Task { await vm.selectAdjacentTab(delta: mods.contains(.shift) ? -1 : 1) }
+            return true
+        }
+
+        // Let menu bar .commands handle any Command/Option/Control combination
+        if mods.contains(.command) || mods.contains(.option) || mods.contains(.control) {
+            return false
+        }
+
+        if let responder = NSApp.keyWindow?.firstResponder {
+            if responder is NSTextView || responder is NSTextField {
+                return false
+            }
+            let clsName = NSStringFromClass(type(of: responder))
+            if clsName.contains("WK") && vm.selectedTab == .read && vm.activeEPUB != nil {
+                // WKWebView's own injected keydown handler dispatches EPUB single-key shortcuts
+                return false
+            }
+        }
+
+        let key: String?
+        switch keyCode {
+        case 53: key = "Escape"
+        case 123: key = "ArrowLeft"
+        case 124: key = "ArrowRight"
+        case 125: key = "ArrowDown"
+        case 126: key = "ArrowUp"
+        case 36, 76: key = "Return"
+        default: key = characters
+        }
+        guard let key, !key.isEmpty else { return false }
+        return vm.handleSingleKeyCommand(key, shift: mods.contains(.shift))
+    }
+    #endif
 
     private var rootContent: some View {
         ReaderRootView(vm: vm)
@@ -88,7 +159,19 @@ struct CohortReaderApp: App {
         }
         .defaultSize(width: 1140, height: 780)
         .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    vm.transitionSheet(to: .settings)
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+
             CommandGroup(replacing: .newItem) {
+                Button("Quick Open / Command Palette…") {
+                    vm.openCommandPalette()
+                }
+                .keyboardShortcut("k", modifiers: .command)
+
                 Button("Open PDF or EPUB…") {
                     vm.openExternalFileWithPanel()
                 }
@@ -114,7 +197,21 @@ struct CohortReaderApp: App {
                 .keyboardShortcut("[", modifiers: [.command, .shift])
                 .disabled(vm.openTabs.count < 2)
 
+                ForEach(1...9, id: \.self) { tabNumber in
+                    Button("Tab \(tabNumber)") {
+                        Task { await vm.selectTabByNumber(tabNumber) }
+                    }
+                    .keyboardShortcut(KeyEquivalent(Character("\(tabNumber)")), modifiers: [.command, .option])
+                    .disabled(tabNumber > vm.openTabs.count)
+                }
+
                 Divider()
+
+                Button("Sync Home Library") {
+                    Task { await vm.syncServerCatalog(silent: false) }
+                }
+                .keyboardShortcut("r", modifiers: .command)
+                .disabled(vm.serverURL.isEmpty)
 
                 Button("Send to Phone / Sync Inbox") {
                     Task { await vm.sendActiveDocumentToHomeInbox() }
@@ -129,6 +226,13 @@ struct CohortReaderApp: App {
                 .disabled(vm.activePDFURL == nil || vm.pendingPDFStamps.isEmpty)
             }
 
+            CommandGroup(replacing: .sidebar) {
+                Button(vm.isSidebarCollapsed ? "Show Sidebar" : "Hide Sidebar") {
+                    vm.toggleSidebar()
+                }
+                .keyboardShortcut("\\", modifiers: .command)
+            }
+
             CommandMenu("Reader") {
                 Button("Library") { vm.selectedTab = .shelf }
                     .keyboardShortcut("1", modifiers: .command)
@@ -136,17 +240,48 @@ struct CohortReaderApp: App {
                     .keyboardShortcut("2", modifiers: .command)
                 Button("Atlas") { vm.selectedTab = .map }
                     .keyboardShortcut("3", modifiers: .command)
-                Button("Search") { vm.selectedTab = .search }
-                    .keyboardShortcut("4", modifiers: .command)
+                Button("Search") {
+                    vm.selectedTab = .search
+                    vm.searchFocusToken += 1
+                }
+                .keyboardShortcut("4", modifiers: .command)
 
                 Divider()
 
-                Button("Find in Document") {
-                    vm.tocSegment = 2
+                Button("Contents & Notes") {
+                    vm.tocSegment = 0
                     vm.activeSheet = .toc
+                }
+                .keyboardShortcut("t", modifiers: .command)
+                .disabled(vm.activeBook == nil)
+
+                Button("Typography & Flow…") {
+                    vm.activeSheet = .typography
+                }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+                .disabled(vm.activeEPUB == nil)
+
+                Button("Find in Document") {
+                    vm.openInlineFind()
                 }
                 .keyboardShortcut("f", modifiers: .command)
                 .disabled(vm.activeBook == nil)
+
+                Button(vm.isInlineFindPresented ? "Find Next" : "Go to Page or Chapter…") {
+                    if vm.isInlineFindPresented {
+                        vm.stepInlineFind(delta: 1)
+                    } else {
+                        vm.openGoToPage()
+                    }
+                }
+                .keyboardShortcut("g", modifiers: .command)
+                .disabled(vm.activeBook == nil)
+
+                Button("Find Previous") {
+                    vm.stepInlineFind(delta: -1)
+                }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .disabled(!vm.isInlineFindPresented)
 
                 Button("Go to Page / Thumbnails…") {
                     vm.tocSegment = 0
@@ -170,19 +305,42 @@ struct CohortReaderApp: App {
 
                 Divider()
 
-                Button("Zoom In") { vm.zoomInPDF() }
-                    .keyboardShortcut("+", modifiers: .command)
-                    .disabled(vm.activePDFURL == nil)
+                Button("Highlight Selection") {
+                    let q = vm.activeSelectionText
+                    Task { await vm.saveQuickHighlight(quote: q) }
+                }
+                .keyboardShortcut("h", modifiers: [.command, .shift])
+                .disabled(vm.activeSelectionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-                Button("Zoom Out") { vm.zoomOutPDF() }
-                    .keyboardShortcut("-", modifiers: .command)
-                    .disabled(vm.activePDFURL == nil)
-
-                Button("Fit Page Width") { vm.resetPDFZoom() }
-                    .keyboardShortcut("0", modifiers: .command)
-                    .disabled(vm.activePDFURL == nil)
+                Button("Send Selection to Cohort") {
+                    vm.prepareCohortDraft(quote: vm.activeSelectionText)
+                }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .disabled(vm.activeSelectionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                 Divider()
+
+                Button("Zoom In / Larger Text") { vm.increaseReadingScale() }
+                    .keyboardShortcut("+", modifiers: .command)
+                    .disabled(vm.activePDFURL == nil && vm.activeEPUB == nil)
+
+                Button("Zoom Out / Smaller Text") { vm.decreaseReadingScale() }
+                    .keyboardShortcut("-", modifiers: .command)
+                    .disabled(vm.activePDFURL == nil && vm.activeEPUB == nil)
+
+                Button("Fit Page / Reset Text Size") { vm.resetReadingScale() }
+                    .keyboardShortcut("0", modifiers: .command)
+                    .disabled(vm.activePDFURL == nil && vm.activeEPUB == nil)
+
+                Divider()
+
+                Button("Cycle Reading Theme") { vm.cycleActiveReadingTheme() }
+                    .keyboardShortcut("t", modifiers: [.command, .option])
+                    .disabled(vm.activeBook == nil)
+
+                Button("Toggle EPUB Scroll / Pages") { vm.toggleEPUBReadingFlow() }
+                    .keyboardShortcut("p", modifiers: [.command, .option])
+                    .disabled(vm.activeEPUB == nil)
 
                 Button("Toggle Two-Page Spread") { vm.togglePDFTwoUpMode() }
                     .keyboardShortcut("2", modifiers: [.command, .option])
@@ -190,10 +348,6 @@ struct CohortReaderApp: App {
 
                 Button("Toggle Margin Crop") { vm.togglePDFAutoCrop() }
                     .keyboardShortcut("c", modifiers: [.command, .option])
-                    .disabled(vm.activePDFURL == nil)
-
-                Button("Cycle PDF Paper Theme") { vm.cyclePDFAppearance() }
-                    .keyboardShortcut("t", modifiers: [.command, .option])
                     .disabled(vm.activePDFURL == nil)
 
                 Button("Sign & Stamp PDF") { vm.activeSheet = .pdfSign }
@@ -215,6 +369,13 @@ struct CohortReaderApp: App {
                 }
                 .keyboardShortcut(".", modifiers: .command)
                 .disabled(vm.activeBook == nil)
+            }
+
+            CommandGroup(replacing: .help) {
+                Button("Keyboard Shortcuts") {
+                    vm.toggleShortcutsHUD()
+                }
+                .keyboardShortcut("/", modifiers: .command)
             }
         }
         #else

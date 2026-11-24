@@ -47,6 +47,7 @@ public struct ShelfView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Import EPUB or PDF")
+                .help("Import EPUB or PDF (⌘O)")
 
                 if isSnapshot {
                     Image(systemName: "arrow.up.arrow.down")
@@ -81,6 +82,7 @@ public struct ShelfView: View {
                     .menuStyle(.borderlessButton)
                     .fixedSize()
                     .accessibilityLabel("Sort library")
+                    .help("Sort library")
                 }
 
                 Button {
@@ -97,6 +99,7 @@ public struct ShelfView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(vm.shelfUsesListLayout ? "Show cover grid" : "Show list")
+                .help(vm.shelfUsesListLayout ? "Show cover grid" : "Show list")
 
                 Button {
                     vm.activeSheet = .settings
@@ -118,6 +121,7 @@ public struct ShelfView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Settings")
+                .help("Settings (⌘,)")
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
@@ -224,6 +228,7 @@ public struct ShelfView: View {
                     isSnapshot: isSnapshot,
                     isServerConnected: vm.isServerConnected,
                     hasAtlasMatch: vm.manifoldWork(for: hero) != nil,
+                    showKeyboardHint: totalWidth >= 560,
                     onResume: {
                         ReaderHaptics.light()
                         Task { await vm.openBook(hero) }
@@ -253,6 +258,7 @@ public struct ShelfView: View {
                             isSnapshot: isSnapshot,
                             isServerConnected: vm.isServerConnected,
                             isBusy: vm.isBusyBookId == book.id,
+                            isFocused: vm.focusedShelfBookId == book.id,
                             hasAtlasMatch: vm.manifoldWork(for: book) != nil,
                             onOpen: { Task { await vm.openBook(book) } },
                             onToggleOffline: {
@@ -427,6 +433,7 @@ public struct ShelfView: View {
                             isSnapshot: isSnapshot,
                             isServerConnected: vm.isServerConnected,
                             isBusy: vm.isBusyBookId == book.id,
+                            isFocused: vm.focusedShelfBookId == book.id,
                             hasAtlasMatch: vm.manifoldWork(for: book) != nil,
                             onOpen: { Task { await vm.openBook(book) } },
                             onToggleOffline: {
@@ -482,6 +489,7 @@ private struct HeroContinueCard: View {
     let isSnapshot: Bool
     let isServerConnected: Bool
     let hasAtlasMatch: Bool
+    let showKeyboardHint: Bool
     let onResume: () -> Void
     let onToggleOffline: () -> Void
     let onShowInAtlas: () -> Void
@@ -492,13 +500,13 @@ private struct HeroContinueCard: View {
                 BookCoverView(
                     book: book,
                     serverURL: serverURL,
-                    width: 78,
-                    height: 117,
+                    width: 68,
+                    height: 102,
                     isSnapshot: isSnapshot,
                     reloadToken: isServerConnected
                 )
 
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 5) {
                     Text(book.title)
                         .font(.system(size: 16, weight: .semibold, design: .serif))
                         .foregroundStyle(ReaderPalette.label)
@@ -513,11 +521,18 @@ private struct HeroContinueCard: View {
                             .lineLimit(1)
                     }
 
+                    if !book.summary.isEmpty && !book.summary.hasPrefix("Indexed") {
+                        Text(book.summary)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(ReaderPalette.secondary.opacity(0.9))
+                            .lineLimit(1)
+                    }
+
                     Spacer(minLength: 2)
 
                     HStack(spacing: 8) {
                         InstrumentGauge(ratio: Double(max(book.progressPercent, 3)) / 100.0, tint: ReaderPalette.accent)
-                            .frame(maxWidth: 96)
+                            .frame(maxWidth: 108)
                         if book.progressPercent > 0 {
                             Text("\(book.progressPercent)%")
                                 .font(.system(size: 11, design: .monospaced))
@@ -525,12 +540,21 @@ private struct HeroContinueCard: View {
                                 .monospacedDigit()
                         }
                         Spacer(minLength: 4)
-                        Text("Resume")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 5)
-                            .background(ReaderPalette.accent, in: Capsule())
+                        HStack(spacing: 6) {
+                            Text("Resume")
+                                .font(.system(size: 12, weight: .semibold))
+                            #if os(macOS)
+                            if showKeyboardHint {
+                                Text("↩")
+                                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                    .opacity(0.82)
+                            }
+                            #endif
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(ReaderPalette.accent, in: Capsule())
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -567,6 +591,7 @@ private struct BookGridCard: View {
     let isSnapshot: Bool
     let isServerConnected: Bool
     let isBusy: Bool
+    let isFocused: Bool
     let hasAtlasMatch: Bool
     let onOpen: () -> Void
     let onToggleOffline: () -> Void
@@ -628,6 +653,10 @@ private struct BookGridCard: View {
                             .padding(5)
                     }
                 }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(isFocused ? ReaderPalette.accent : Color.clear, lineWidth: isFocused ? 2.5 : 0)
+                )
 
                 if hasRealArt {
                     Text(book.title.components(separatedBy: " — ").first ?? book.title)
@@ -678,9 +707,8 @@ private struct DiscoveryRailCard: View {
 
     private var cache = AssetImageCache.shared
 
-    private var badgeText: String {
-        if isSaved { return "Saved" }
-        return (work.epubURL != nil || work.openAccessURL != nil) ? "Free" : "BYO"
+    private var isOpenAccess: Bool {
+        work.epubURL != nil || work.openAccessURL != nil
     }
 
     private var shortCreator: String {
@@ -700,17 +728,23 @@ private struct DiscoveryRailCard: View {
                     height: 128,
                     isSnapshot: isSnapshot
                 )
-                .overlay(alignment: .bottomTrailing) {
-                    Text(badgeText)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(
-                            (isSaved ? ReaderPalette.accent : Color.black.opacity(0.62)),
-                            in: Capsule()
-                        )
-                        .padding(5)
+                .overlay(alignment: .topTrailing) {
+                    if isSaved {
+                        Image(systemName: "bookmark.fill")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(ReaderPalette.accent)
+                            .padding(4)
+                            .background(ReaderPalette.elevated.opacity(0.92), in: Circle())
+                            .padding(4)
+                    } else if isOpenAccess {
+                        Text("Open")
+                            .font(.system(size: 8.5, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.black.opacity(0.62), in: Capsule())
+                            .padding(5)
+                    }
                 }
 
                 if hasRealArt {
@@ -732,6 +766,7 @@ private struct DiscoveryRailCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(shortCreator.isEmpty ? work.title : "\(work.title) — \(shortCreator)")
     }
 }
 
@@ -744,9 +779,8 @@ private struct DiscoveryGridCard: View {
 
     private var cache = AssetImageCache.shared
 
-    private var badgeText: String {
-        if isSaved { return "Saved" }
-        return (work.epubURL != nil || work.openAccessURL != nil) ? "Free" : "BYO"
+    private var isOpenAccess: Bool {
+        work.epubURL != nil || work.openAccessURL != nil
     }
 
     private var shortCreator: String {
@@ -766,17 +800,23 @@ private struct DiscoveryGridCard: View {
                     height: coverWidth.map { ($0 * 1.48).rounded() },
                     isSnapshot: isSnapshot
                 )
-                .overlay(alignment: .bottomTrailing) {
-                    Text(badgeText)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            (isSaved ? ReaderPalette.accent : Color.black.opacity(0.62)),
-                            in: Capsule()
-                        )
-                        .padding(5)
+                .overlay(alignment: .topTrailing) {
+                    if isSaved {
+                        Image(systemName: "bookmark.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(ReaderPalette.accent)
+                            .padding(5)
+                            .background(ReaderPalette.elevated.opacity(0.92), in: Circle())
+                            .padding(5)
+                    } else if isOpenAccess {
+                        Text("Open")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.black.opacity(0.62), in: Capsule())
+                            .padding(5)
+                    }
                 }
 
                 if hasRealArt {
@@ -810,6 +850,7 @@ private struct BookShelfListRow: View {
     let isSnapshot: Bool
     let isServerConnected: Bool
     let isBusy: Bool
+    let isFocused: Bool
     let hasAtlasMatch: Bool
     let onOpen: () -> Void
     let onToggleOffline: () -> Void
@@ -876,7 +917,14 @@ private struct BookShelfListRow: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
-        .background(ReaderPalette.background)
+        .background(isFocused ? ReaderPalette.accent.opacity(0.10) : ReaderPalette.background)
+        .overlay(alignment: .leading) {
+            if isFocused {
+                Rectangle()
+                    .fill(ReaderPalette.accent)
+                    .frame(width: 3)
+            }
+        }
         .contextMenu {
             Button(action: onOpen) {
                 Label("Open", systemImage: "book.pages")

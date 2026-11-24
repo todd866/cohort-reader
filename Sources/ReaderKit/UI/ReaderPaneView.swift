@@ -14,9 +14,11 @@ public struct ReaderPaneView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.readerSnapshotMode) private var isSnapshot
     @Bindable public var vm: ReaderViewModel
+    public var isSidebarVisible: Bool
 
-    public init(vm: ReaderViewModel) {
+    public init(vm: ReaderViewModel, isSidebarVisible: Bool = false) {
         self.vm = vm
+        self.isSidebarVisible = isSidebarVisible
     }
 
     public var body: some View {
@@ -78,6 +80,21 @@ public struct ReaderPaneView: View {
             if !vm.isReaderChromeHidden || isSnapshot {
                 // Top Reader Bar
                 HStack(spacing: 6) {
+                    #if os(macOS)
+                    if !isSidebarVisible {
+                        Button {
+                            vm.toggleSidebar()
+                        } label: {
+                            Image(systemName: "sidebar.left")
+                                .font(.system(size: 13.5, weight: .medium))
+                                .foregroundStyle(ReaderPalette.accent)
+                                .padding(5)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Show Sidebar")
+                        .help("Show Sidebar (⌘\\)")
+                    }
+                    #else
                     Button {
                         ReaderHaptics.selection()
                         vm.cancelActiveOpen()
@@ -97,6 +114,7 @@ public struct ReaderPaneView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Back to Library")
+                    #endif
 
                     Button {
                         vm.activeSheet = .toc
@@ -109,6 +127,23 @@ public struct ReaderPaneView: View {
                     .buttonStyle(.plain)
                     .disabled(vm.activeBook == nil)
                     .accessibilityLabel("Contents, Notes & Find")
+                    .help("Contents & Notes (⌘T)")
+
+                    #if os(macOS)
+                    if vm.activeBook != nil {
+                        Button {
+                            vm.openInlineFind()
+                        } label: {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(vm.isInlineFindPresented ? ReaderPalette.accent : chromeFg)
+                                .padding(5)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Find in Document")
+                        .help("Find Inline (⌘F or /)")
+                    }
+                    #endif
 
                     VStack(alignment: .leading, spacing: 1) {
                         Text(vm.activeBook?.title ?? "No document open")
@@ -139,7 +174,7 @@ public struct ReaderPaneView: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Crop Margins")
-                            .help("Trim wide PDF margins")
+                            .help("Trim wide PDF margins (⌥⌘C or c)")
 
                             if isSnapshot {
                                 Image(systemName: vm.pdfAppearance.symbol)
@@ -249,7 +284,7 @@ public struct ReaderPaneView: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Sign PDF")
-                            .help("Sign & Stamp PDF")
+                            .help("Sign & Stamp PDF (⌥⌘S or s)")
                         } else {
                             Button {
                                 let sampleQuote = vm.activeSelectionText.isEmpty
@@ -264,6 +299,7 @@ public struct ReaderPaneView: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Send passage to Cohort")
+                            .help("Send Selection to Cohort (⇧⌘C)")
 
                             Button {
                                 vm.activeSheet = .typography
@@ -276,7 +312,22 @@ public struct ReaderPaneView: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Typography")
+                            .help("Typography & Flow (⇧⌘T)")
                         }
+
+                        #if os(macOS)
+                        Button {
+                            vm.toggleShortcutsHUD()
+                        } label: {
+                            Image(systemName: "keyboard")
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(vm.isShortcutsHUDPresented ? ReaderPalette.accent : chromeFg)
+                                .padding(5)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Keyboard Shortcuts")
+                        .help("Keyboard Shortcuts (? or ⌘/)")
+                        #endif
 
                         Button {
                             ReaderHaptics.light()
@@ -291,6 +342,7 @@ public struct ReaderPaneView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Focus Reading")
+                        .help("Focus Reading (⌘. or f)")
                     }
                 }
                 .padding(.horizontal, 10)
@@ -330,6 +382,11 @@ public struct ReaderPaneView: View {
                             baseArchiveDir: (currentHref as NSString).deletingLastPathComponent,
                             currentChapterHref: currentHref,
                             chapterHighlights: vm.activeHighlights.filter { $0.spine == vm.activeEPUBSpineIndex },
+                            inlineFindQuery: vm.isInlineFindPresented ? vm.inlineFindQuery : "",
+                            inlineFindActionToken: vm.inlineFindActionToken,
+                            inlineFindDirection: vm.inlineFindDirection,
+                            epubCommandToken: vm.epubCommandToken,
+                            epubPendingCommand: vm.epubPendingCommand,
                             onNoteTap: { noteId in
                                 if let hit = vm.activeNotes.first(where: { $0.id == noteId }) {
                                     ReaderHaptics.selection()
@@ -373,44 +430,56 @@ public struct ReaderPaneView: View {
                             onFootnoteTap: { path, frag in
                                 ReaderHaptics.selection()
                                 vm.previewEPUBFootnote(archivePath: path, fragment: frag)
+                            },
+                            onFindStatus: { current, total in
+                                vm.inlineFindActiveIndex = current
+                                vm.inlineFindTotalCount = total
+                            },
+                            onKeyCommand: { key in
+                                _ = vm.handleSingleKeyCommand(key)
                             }
                         )
                         .background(ReaderPalette.themeBackground(activeTheme))
                     }
                 } else if let pdfURL = vm.activePDFURL {
+                    let resolvedPaper: PDFPaperAppearance = {
+                        switch vm.pdfAppearance {
+                        case .auto:
+                            switch activeTheme {
+                            case .ink: return .night
+                            case .sepia: return .sepia
+                            case .paper, .auto: return .original
+                            }
+                        default:
+                            return vm.pdfAppearance
+                        }
+                    }()
                     if isSnapshot {
                         SnapshotPDFReaderBody(
                             book: vm.activeBook,
                             metadata: vm.activePDFMetadata,
                             pageIndex: vm.activePDFPageIndex,
-                            stamps: vm.pendingPDFStamps.filter { $0.pageIndex == vm.activePDFPageIndex }
+                            stamps: vm.pendingPDFStamps.filter { $0.pageIndex == vm.activePDFPageIndex },
+                            appearance: resolvedPaper
                         )
                     } else {
-                        let resolvedPaper: PDFPaperAppearance = {
-                            switch vm.pdfAppearance {
-                            case .auto:
-                                switch activeTheme {
-                                case .ink: return .night
-                                case .sepia: return .sepia
-                                case .paper, .auto: return .original
-                                }
-                            default:
-                                return vm.pdfAppearance
-                            }
-                        }()
-
                         ZStack {
                             PDFKitReaderView(
                                 url: pdfURL,
                                 pageIndex: vm.activePDFPageIndex,
                                 theme: activeTheme,
+                                pdfPaper: resolvedPaper,
                                 autoCrop: vm.pdfAutoCropEnabled,
                                 twoColumnMode: vm.pdfTwoColumnMode,
                                 twoColumnStep: vm.pdfTwoColumnStep,
                                 twoUpMode: vm.pdfTwoUpMode,
                                 zoomScale: vm.pdfZoomScale,
                                 highlights: vm.activeHighlights,
-                                searchHighlightQuery: vm.activePDFSearchHighlight,
+                                searchHighlightQuery: vm.isInlineFindPresented ? vm.inlineFindQuery : vm.activePDFSearchHighlight,
+                                inlineFindActionToken: vm.inlineFindActionToken,
+                                inlineFindDirection: vm.inlineFindDirection,
+                                pdfCommandToken: vm.pdfCommandToken,
+                                pdfPendingCommand: vm.pdfPendingCommand,
                                 onPageChanged: { newPage in
                                     Task { await vm.selectPDFPage(newPage) }
                                 },
@@ -433,15 +502,21 @@ public struct ReaderPaneView: View {
                                     withAnimation(.easeInOut(duration: 0.18)) {
                                         vm.isReaderChromeHidden.toggle()
                                     }
+                                },
+                                onFindStatus: { current, total in
+                                    vm.inlineFindActiveIndex = current
+                                    vm.inlineFindTotalCount = total
                                 }
                             )
                             .modifier(PDFPaperAppearanceModifier(appearance: resolvedPaper))
+                            .background(ReaderPalette.deskCanvas)
 
                             let pageStamps = vm.pendingPDFStamps.filter { $0.pageIndex == vm.activePDFPageIndex }
                             if !pageStamps.isEmpty {
                                 PDFStampOverlayView(vm: vm, stamps: pageStamps)
                             }
                         }
+                        .background(ReaderPalette.deskCanvas)
                     }
                 } else if let book = vm.activeBook {
                     if vm.openingBookId == book.id {
@@ -642,6 +717,19 @@ public struct ReaderPaneView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .topTrailing) {
+                if !isSnapshot {
+                    if vm.isInlineFindPresented {
+                        InlineFindOverlay(vm: vm)
+                            .padding(.top, 10)
+                            .padding(.trailing, 14)
+                    } else if vm.isGoToPagePresented {
+                        InlineGoToPageOverlay(vm: vm)
+                            .padding(.top, 10)
+                            .padding(.trailing, 14)
+                    }
+                }
+            }
 
             if let epub = vm.activeEPUB, (!vm.isReaderChromeHidden || isSnapshot) {
                 let displayIdx = vm.scrubChapterTarget ?? vm.activeEPUBSpineIndex
@@ -961,8 +1049,9 @@ private struct SnapshotEPUBReaderBody: View {
                 }
             }
             .padding(.horizontal, padX)
-            .padding(.vertical, 18)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 22)
+            .frame(maxWidth: 660, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(bg)
     }
@@ -982,35 +1071,46 @@ private struct SnapshotEPUBReaderBody: View {
 }
 
 private struct SnapshotPDFReaderBody: View {
+    @Environment(\.colorScheme) private var colorScheme
     let book: BookItem?
     let metadata: PDFMetadataSummary?
     let pageIndex: Int
     var stamps: [PDFStampPlacement] = []
+    var appearance: PDFPaperAppearance = .original
 
     var body: some View {
+        let isNight = appearance == .night || (appearance == .auto && colorScheme == .dark)
+        let isSepia = appearance == .sepia
+        let paperBg: Color = isNight
+            ? ReaderPalette.themeBackground(.ink)
+            : (isSepia ? ReaderPalette.themeBackground(.sepia) : Color(red: 0.996, green: 0.993, blue: 0.985))
+        let inkPrimary: Color = isNight ? ReaderPalette.themeForeground(.ink) : Color(red: 0.11, green: 0.10, blue: 0.09)
+        let inkSecondary: Color = isNight ? ReaderPalette.secondary : Color(red: 0.42, green: 0.39, blue: 0.35)
+        let inkBody: Color = isNight ? ReaderPalette.themeForeground(.ink).opacity(0.90) : Color(red: 0.16, green: 0.15, blue: 0.14)
+
         ZStack {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.white)
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(ReaderPalette.hairline, lineWidth: 1))
-                .shadow(color: Color.black.opacity(0.06), radius: 8, y: 2)
+            RoundedRectangle(cornerRadius: 8)
+                .fill(paperBg)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(ReaderPalette.hairline, lineWidth: 1))
+                .shadow(color: Color.black.opacity(isNight ? 0.38 : 0.10), radius: 12, y: 4)
 
             VStack(alignment: .leading, spacing: 10) {
                 Text(metadata?.title ?? book?.title ?? "PDF")
                     .font(.system(size: 17, weight: .semibold, design: .serif))
-                    .foregroundStyle(Color(red: 0.10, green: 0.11, blue: 0.14))
+                    .foregroundStyle(inkPrimary)
                 Text("Page \(pageIndex + 1) / \(max(1, metadata?.pageCount ?? 1))")
                     .font(.system(size: 11.5, design: .monospaced))
-                    .foregroundStyle(Color(red: 0.42, green: 0.44, blue: 0.48))
+                    .foregroundStyle(inkSecondary)
                 Divider()
                 if let front = metadata?.frontMatterText, !front.isEmpty {
                     Text(front)
                         .font(.system(size: 12.5, design: .serif))
-                        .foregroundStyle(Color(red: 0.16, green: 0.18, blue: 0.22))
+                        .foregroundStyle(inkBody)
                         .lineSpacing(3)
                 }
                 Spacer()
             }
-            .padding(20)
+            .padding(22)
 
             if !stamps.isEmpty {
                 GeometryReader { geo in
@@ -1021,7 +1121,7 @@ private struct SnapshotPDFReaderBody: View {
                             width: stamp.normalizedRect.width * geo.size.width,
                             height: stamp.normalizedRect.height * geo.size.height
                         )
-                        SignatureVectorPreview(kind: stamp.kind)
+                        SignatureVectorPreview(kind: stamp.kind, color: isNight ? ReaderPalette.accent : nil)
                             .frame(width: rect.width, height: rect.height)
                             .padding(3)
                             .overlay(
@@ -1034,8 +1134,11 @@ private struct SnapshotPDFReaderBody: View {
                 }
             }
         }
-        .padding(16)
+        .frame(maxWidth: 740, maxHeight: .infinity)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ReaderPalette.deskCanvas)
     }
 }
 
@@ -1266,12 +1369,19 @@ private struct EPUBWebView: UIViewRepresentable {
     let baseArchiveDir: String
     let currentChapterHref: String
     let chapterHighlights: [ReadingHighlight]
+    let inlineFindQuery: String
+    let inlineFindActionToken: Int
+    let inlineFindDirection: Int
+    let epubCommandToken: Int
+    let epubPendingCommand: String?
     let onNoteTap: (String) -> Void
     let onProgress: (Double, Int) -> Void
     let onSelection: (String) -> Void
     let onSelectSpine: (Int) -> Void
     let onZoneTap: (String) -> Void
     let onFootnoteTap: (String, String) -> Void
+    let onFindStatus: (Int, Int) -> Void
+    let onKeyCommand: (String) -> Void
 
     func makeCoordinator() -> EPUBWebCoordinator {
         EPUBWebCoordinator(
@@ -1282,7 +1392,9 @@ private struct EPUBWebView: UIViewRepresentable {
             onSelection: onSelection,
             onSelectSpine: onSelectSpine,
             onZoneTap: onZoneTap,
-            onFootnoteTap: onFootnoteTap
+            onFootnoteTap: onFootnoteTap,
+            onFindStatus: onFindStatus,
+            onKeyCommand: onKeyCommand
         )
     }
 
@@ -1299,43 +1411,29 @@ private struct EPUBWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ web: WKWebView, context: Context) {
-        context.coordinator.document = document
-        context.coordinator.currentChapterHref = currentChapterHref
-        context.coordinator.onNoteTap = onNoteTap
-        context.coordinator.onProgress = onProgress
-        context.coordinator.onSelection = onSelection
-        context.coordinator.onSelectSpine = onSelectSpine
-        context.coordinator.onZoneTap = onZoneTap
-        context.coordinator.onFootnoteTap = onFootnoteTap
-        let currentHighlightIds = Set(chapterHighlights.map(\.id))
-        if context.coordinator.lastChapterKey != chapterKey {
-            context.coordinator.lastChapterKey = chapterKey
-            context.coordinator.lastTypographyJS = typographyJS
-            context.coordinator.lastHighlightIds = currentHighlightIds
-            let base = baseArchiveDir.isEmpty ? URL(string: "cohortbook://local/") : URL(string: "cohortbook://local/\(baseArchiveDir)/")
-            web.loadHTMLString(html, baseURL: base)
-        } else {
-            if context.coordinator.lastTypographyJS != typographyJS {
-                context.coordinator.lastTypographyJS = typographyJS
-                web.evaluateJavaScript(typographyJS, completionHandler: nil)
-            }
-            if context.coordinator.lastHighlightIds != currentHighlightIds {
-                if context.coordinator.lastHighlightIds.isSubset(of: currentHighlightIds) {
-                    let addedIds = currentHighlightIds.subtracting(context.coordinator.lastHighlightIds)
-                    for hl in chapterHighlights where addedIds.contains(hl.id) {
-                        if let encoded = try? JSONEncoder().encode([hl.quote]),
-                           let arrStr = String(data: encoded, encoding: .utf8) {
-                            web.evaluateJavaScript("window.__cohortAddHighlight && window.__cohortAddHighlight(\(arrStr)[0]);", completionHandler: nil)
-                        }
-                    }
-                    context.coordinator.lastHighlightIds = currentHighlightIds
-                } else {
-                    context.coordinator.lastHighlightIds = currentHighlightIds
-                    let base = baseArchiveDir.isEmpty ? URL(string: "cohortbook://local/") : URL(string: "cohortbook://local/\(baseArchiveDir)/")
-                    web.loadHTMLString(html, baseURL: base)
-                }
-            }
-        }
+        context.coordinator.sync(
+            webView: web,
+            document: document,
+            currentChapterHref: currentChapterHref,
+            html: html,
+            chapterKey: chapterKey,
+            typographyJS: typographyJS,
+            baseArchiveDir: baseArchiveDir,
+            chapterHighlights: chapterHighlights,
+            inlineFindQuery: inlineFindQuery,
+            inlineFindActionToken: inlineFindActionToken,
+            inlineFindDirection: inlineFindDirection,
+            epubCommandToken: epubCommandToken,
+            epubPendingCommand: epubPendingCommand,
+            onNoteTap: onNoteTap,
+            onProgress: onProgress,
+            onSelection: onSelection,
+            onSelectSpine: onSelectSpine,
+            onZoneTap: onZoneTap,
+            onFootnoteTap: onFootnoteTap,
+            onFindStatus: onFindStatus,
+            onKeyCommand: onKeyCommand
+        )
     }
 }
 
@@ -1343,6 +1441,7 @@ private struct PDFKitReaderView: UIViewRepresentable {
     let url: URL
     let pageIndex: Int
     let theme: ReaderTheme
+    let pdfPaper: PDFPaperAppearance
     let autoCrop: Bool
     let twoColumnMode: Bool
     let twoColumnStep: Int
@@ -1350,11 +1449,16 @@ private struct PDFKitReaderView: UIViewRepresentable {
     let zoomScale: Double
     let highlights: [ReadingHighlight]
     let searchHighlightQuery: String?
+    let inlineFindActionToken: Int
+    let inlineFindDirection: Int
+    let pdfCommandToken: Int
+    let pdfPendingCommand: String?
     let onPageChanged: (Int) -> Void
     let onSelectionChanged: (String) -> Void
     let onColumnsDetected: (Int) -> Void
     let onPageFrameChanged: (CGRect) -> Void
     let onCenterTap: () -> Void
+    let onFindStatus: (Int, Int) -> Void
 
     func makeCoordinator() -> PDFViewCoordinator {
         PDFViewCoordinator(
@@ -1362,7 +1466,8 @@ private struct PDFKitReaderView: UIViewRepresentable {
             onSelectionChanged: onSelectionChanged,
             onColumnsDetected: onColumnsDetected,
             onPageFrameChanged: onPageFrameChanged,
-            onCenterTap: onCenterTap
+            onCenterTap: onCenterTap,
+            onFindStatus: onFindStatus
         )
     }
 
@@ -1370,7 +1475,7 @@ private struct PDFKitReaderView: UIViewRepresentable {
         let view = PDFView()
         view.autoScales = true
         view.displayMode = (twoUpMode && !twoColumnMode) ? .twoUpContinuous : .singlePageContinuous
-        view.backgroundColor = UIColor(ReaderPalette.themeBackground(theme))
+        view.backgroundColor = pdfPaper == .night ? UIColor(red: 0.955, green: 0.959, blue: 0.963, alpha: 1.0) : UIColor(ReaderPalette.deskCanvas)
         view.document = PDFDocument(url: url)
         view.delegate = context.coordinator
         context.coordinator.observe(view)
@@ -1387,7 +1492,8 @@ private struct PDFKitReaderView: UIViewRepresentable {
         context.coordinator.onSelectionChanged = onSelectionChanged
         context.coordinator.onColumnsDetected = onColumnsDetected
         context.coordinator.onPageFrameChanged = onPageFrameChanged
-        view.backgroundColor = UIColor(ReaderPalette.themeBackground(theme))
+        context.coordinator.onFindStatus = onFindStatus
+        view.backgroundColor = pdfPaper == .night ? UIColor(red: 0.955, green: 0.959, blue: 0.963, alpha: 1.0) : UIColor(ReaderPalette.deskCanvas)
         context.coordinator.syncDocumentState(
             on: view,
             url: url,
@@ -1398,7 +1504,11 @@ private struct PDFKitReaderView: UIViewRepresentable {
             twoUpMode: twoUpMode,
             zoomScale: zoomScale,
             highlights: highlights,
-            searchQuery: searchHighlightQuery
+            searchQuery: searchHighlightQuery,
+            inlineFindActionToken: inlineFindActionToken,
+            inlineFindDirection: inlineFindDirection,
+            pdfCommandToken: pdfCommandToken,
+            pdfPendingCommand: pdfPendingCommand
         )
     }
 }
@@ -1411,12 +1521,19 @@ private struct EPUBWebView: NSViewRepresentable {
     let baseArchiveDir: String
     let currentChapterHref: String
     let chapterHighlights: [ReadingHighlight]
+    let inlineFindQuery: String
+    let inlineFindActionToken: Int
+    let inlineFindDirection: Int
+    let epubCommandToken: Int
+    let epubPendingCommand: String?
     let onNoteTap: (String) -> Void
     let onProgress: (Double, Int) -> Void
     let onSelection: (String) -> Void
     let onSelectSpine: (Int) -> Void
     let onZoneTap: (String) -> Void
     let onFootnoteTap: (String, String) -> Void
+    let onFindStatus: (Int, Int) -> Void
+    let onKeyCommand: (String) -> Void
 
     func makeCoordinator() -> EPUBWebCoordinator {
         EPUBWebCoordinator(
@@ -1427,7 +1544,9 @@ private struct EPUBWebView: NSViewRepresentable {
             onSelection: onSelection,
             onSelectSpine: onSelectSpine,
             onZoneTap: onZoneTap,
-            onFootnoteTap: onFootnoteTap
+            onFootnoteTap: onFootnoteTap,
+            onFindStatus: onFindStatus,
+            onKeyCommand: onKeyCommand
         )
     }
 
@@ -1441,43 +1560,29 @@ private struct EPUBWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ web: WKWebView, context: Context) {
-        context.coordinator.document = document
-        context.coordinator.currentChapterHref = currentChapterHref
-        context.coordinator.onNoteTap = onNoteTap
-        context.coordinator.onProgress = onProgress
-        context.coordinator.onSelection = onSelection
-        context.coordinator.onSelectSpine = onSelectSpine
-        context.coordinator.onZoneTap = onZoneTap
-        context.coordinator.onFootnoteTap = onFootnoteTap
-        let currentHighlightIds = Set(chapterHighlights.map(\.id))
-        if context.coordinator.lastChapterKey != chapterKey {
-            context.coordinator.lastChapterKey = chapterKey
-            context.coordinator.lastTypographyJS = typographyJS
-            context.coordinator.lastHighlightIds = currentHighlightIds
-            let base = baseArchiveDir.isEmpty ? URL(string: "cohortbook://local/") : URL(string: "cohortbook://local/\(baseArchiveDir)/")
-            web.loadHTMLString(html, baseURL: base)
-        } else {
-            if context.coordinator.lastTypographyJS != typographyJS {
-                context.coordinator.lastTypographyJS = typographyJS
-                web.evaluateJavaScript(typographyJS, completionHandler: nil)
-            }
-            if context.coordinator.lastHighlightIds != currentHighlightIds {
-                if context.coordinator.lastHighlightIds.isSubset(of: currentHighlightIds) {
-                    let addedIds = currentHighlightIds.subtracting(context.coordinator.lastHighlightIds)
-                    for hl in chapterHighlights where addedIds.contains(hl.id) {
-                        if let encoded = try? JSONEncoder().encode([hl.quote]),
-                           let arrStr = String(data: encoded, encoding: .utf8) {
-                            web.evaluateJavaScript("window.__cohortAddHighlight && window.__cohortAddHighlight(\(arrStr)[0]);", completionHandler: nil)
-                        }
-                    }
-                    context.coordinator.lastHighlightIds = currentHighlightIds
-                } else {
-                    context.coordinator.lastHighlightIds = currentHighlightIds
-                    let base = baseArchiveDir.isEmpty ? URL(string: "cohortbook://local/") : URL(string: "cohortbook://local/\(baseArchiveDir)/")
-                    web.loadHTMLString(html, baseURL: base)
-                }
-            }
-        }
+        context.coordinator.sync(
+            webView: web,
+            document: document,
+            currentChapterHref: currentChapterHref,
+            html: html,
+            chapterKey: chapterKey,
+            typographyJS: typographyJS,
+            baseArchiveDir: baseArchiveDir,
+            chapterHighlights: chapterHighlights,
+            inlineFindQuery: inlineFindQuery,
+            inlineFindActionToken: inlineFindActionToken,
+            inlineFindDirection: inlineFindDirection,
+            epubCommandToken: epubCommandToken,
+            epubPendingCommand: epubPendingCommand,
+            onNoteTap: onNoteTap,
+            onProgress: onProgress,
+            onSelection: onSelection,
+            onSelectSpine: onSelectSpine,
+            onZoneTap: onZoneTap,
+            onFootnoteTap: onFootnoteTap,
+            onFindStatus: onFindStatus,
+            onKeyCommand: onKeyCommand
+        )
     }
 }
 
@@ -1485,6 +1590,7 @@ private struct PDFKitReaderView: NSViewRepresentable {
     let url: URL
     let pageIndex: Int
     let theme: ReaderTheme
+    let pdfPaper: PDFPaperAppearance
     let autoCrop: Bool
     let twoColumnMode: Bool
     let twoColumnStep: Int
@@ -1492,11 +1598,16 @@ private struct PDFKitReaderView: NSViewRepresentable {
     let zoomScale: Double
     let highlights: [ReadingHighlight]
     let searchHighlightQuery: String?
+    let inlineFindActionToken: Int
+    let inlineFindDirection: Int
+    let pdfCommandToken: Int
+    let pdfPendingCommand: String?
     let onPageChanged: (Int) -> Void
     let onSelectionChanged: (String) -> Void
     let onColumnsDetected: (Int) -> Void
     let onPageFrameChanged: (CGRect) -> Void
     let onCenterTap: () -> Void
+    let onFindStatus: (Int, Int) -> Void
 
     func makeCoordinator() -> PDFViewCoordinator {
         PDFViewCoordinator(
@@ -1504,15 +1615,17 @@ private struct PDFKitReaderView: NSViewRepresentable {
             onSelectionChanged: onSelectionChanged,
             onColumnsDetected: onColumnsDetected,
             onPageFrameChanged: onPageFrameChanged,
-            onCenterTap: onCenterTap
+            onCenterTap: onCenterTap,
+            onFindStatus: onFindStatus
         )
     }
 
     func makeNSView(context: Context) -> PDFView {
         let view = PDFView()
         view.autoScales = true
+        view.pageShadowsEnabled = true
         view.displayMode = (twoUpMode && !twoColumnMode) ? .twoUpContinuous : .singlePageContinuous
-        view.backgroundColor = NSColor(ReaderPalette.themeBackground(theme))
+        view.backgroundColor = pdfPaper == .night ? NSColor(srgbRed: 0.955, green: 0.959, blue: 0.963, alpha: 1.0) : NSColor(ReaderPalette.deskCanvas)
         view.document = PDFDocument(url: url)
         view.delegate = context.coordinator
         context.coordinator.observe(view)
@@ -1524,7 +1637,8 @@ private struct PDFKitReaderView: NSViewRepresentable {
         context.coordinator.onSelectionChanged = onSelectionChanged
         context.coordinator.onColumnsDetected = onColumnsDetected
         context.coordinator.onPageFrameChanged = onPageFrameChanged
-        view.backgroundColor = NSColor(ReaderPalette.themeBackground(theme))
+        context.coordinator.onFindStatus = onFindStatus
+        view.backgroundColor = pdfPaper == .night ? NSColor(srgbRed: 0.955, green: 0.959, blue: 0.963, alpha: 1.0) : NSColor(ReaderPalette.deskCanvas)
         context.coordinator.syncDocumentState(
             on: view,
             url: url,
@@ -1535,7 +1649,11 @@ private struct PDFKitReaderView: NSViewRepresentable {
             twoUpMode: twoUpMode,
             zoomScale: zoomScale,
             highlights: highlights,
-            searchQuery: searchHighlightQuery
+            searchQuery: searchHighlightQuery,
+            inlineFindActionToken: inlineFindActionToken,
+            inlineFindDirection: inlineFindDirection,
+            pdfCommandToken: pdfCommandToken,
+            pdfPendingCommand: pdfPendingCommand
         )
     }
 }
@@ -1548,12 +1666,16 @@ private final class EPUBWebCoordinator: NSObject, WKURLSchemeHandler, WKScriptMe
     var lastChapterKey: String = ""
     var lastTypographyJS: String = ""
     var lastHighlightIds: Set<String> = []
+    var lastFindToken: Int = 0
+    var lastCommandToken: Int = 0
     var onNoteTap: (String) -> Void
     var onProgress: (Double, Int) -> Void
     var onSelection: (String) -> Void
     var onSelectSpine: (Int) -> Void
     var onZoneTap: (String) -> Void
     var onFootnoteTap: (String, String) -> Void
+    var onFindStatus: (Int, Int) -> Void
+    var onKeyCommand: (String) -> Void
 
     init(
         document: EPUBDocument,
@@ -1563,7 +1685,9 @@ private final class EPUBWebCoordinator: NSObject, WKURLSchemeHandler, WKScriptMe
         onSelection: @escaping (String) -> Void,
         onSelectSpine: @escaping (Int) -> Void,
         onZoneTap: @escaping (String) -> Void,
-        onFootnoteTap: @escaping (String, String) -> Void
+        onFootnoteTap: @escaping (String, String) -> Void,
+        onFindStatus: @escaping (Int, Int) -> Void,
+        onKeyCommand: @escaping (String) -> Void
     ) {
         self.document = document
         self.currentChapterHref = currentChapterHref
@@ -1573,6 +1697,105 @@ private final class EPUBWebCoordinator: NSObject, WKURLSchemeHandler, WKScriptMe
         self.onSelectSpine = onSelectSpine
         self.onZoneTap = onZoneTap
         self.onFootnoteTap = onFootnoteTap
+        self.onFindStatus = onFindStatus
+        self.onKeyCommand = onKeyCommand
+    }
+
+    func sync(
+        webView web: WKWebView,
+        document: EPUBDocument,
+        currentChapterHref: String,
+        html: String,
+        chapterKey: String,
+        typographyJS: String,
+        baseArchiveDir: String,
+        chapterHighlights: [ReadingHighlight],
+        inlineFindQuery: String,
+        inlineFindActionToken: Int,
+        inlineFindDirection: Int,
+        epubCommandToken: Int,
+        epubPendingCommand: String?,
+        onNoteTap: @escaping (String) -> Void,
+        onProgress: @escaping (Double, Int) -> Void,
+        onSelection: @escaping (String) -> Void,
+        onSelectSpine: @escaping (Int) -> Void,
+        onZoneTap: @escaping (String) -> Void,
+        onFootnoteTap: @escaping (String, String) -> Void,
+        onFindStatus: @escaping (Int, Int) -> Void,
+        onKeyCommand: @escaping (String) -> Void
+    ) {
+        self.document = document
+        self.currentChapterHref = currentChapterHref
+        self.onNoteTap = onNoteTap
+        self.onProgress = onProgress
+        self.onSelection = onSelection
+        self.onSelectSpine = onSelectSpine
+        self.onZoneTap = onZoneTap
+        self.onFootnoteTap = onFootnoteTap
+        self.onFindStatus = onFindStatus
+        self.onKeyCommand = onKeyCommand
+
+        let currentHighlightIds = Set(chapterHighlights.map(\.id))
+        if lastChapterKey != chapterKey {
+            lastChapterKey = chapterKey
+            lastTypographyJS = typographyJS
+            lastHighlightIds = currentHighlightIds
+            let base = baseArchiveDir.isEmpty ? URL(string: "cohortbook://local/") : URL(string: "cohortbook://local/\(baseArchiveDir)/")
+            web.loadHTMLString(html, baseURL: base)
+            return
+        }
+
+        if lastTypographyJS != typographyJS {
+            lastTypographyJS = typographyJS
+            web.evaluateJavaScript(typographyJS, completionHandler: nil)
+        }
+        if lastHighlightIds != currentHighlightIds {
+            if lastHighlightIds.isSubset(of: currentHighlightIds) {
+                let addedIds = currentHighlightIds.subtracting(lastHighlightIds)
+                for hl in chapterHighlights where addedIds.contains(hl.id) {
+                    if let encoded = try? JSONEncoder().encode([hl.quote]),
+                       let arrStr = String(data: encoded, encoding: .utf8) {
+                        web.evaluateJavaScript("window.__cohortAddHighlight && window.__cohortAddHighlight(\(arrStr)[0]);", completionHandler: nil)
+                    }
+                }
+                lastHighlightIds = currentHighlightIds
+            } else {
+                lastHighlightIds = currentHighlightIds
+                let base = baseArchiveDir.isEmpty ? URL(string: "cohortbook://local/") : URL(string: "cohortbook://local/\(baseArchiveDir)/")
+                web.loadHTMLString(html, baseURL: base)
+                return
+            }
+        }
+        if lastFindToken != inlineFindActionToken {
+            lastFindToken = inlineFindActionToken
+            let cleanQ = inlineFindQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleanQ.isEmpty {
+                web.evaluateJavaScript("window.__cohortClearFind && window.__cohortClearFind();", completionHandler: nil)
+            } else if let encoded = try? JSONEncoder().encode([cleanQ]),
+                      let arrStr = String(data: encoded, encoding: .utf8) {
+                let dir = inlineFindDirection == -1 ? -1 : 1
+                web.evaluateJavaScript("window.__cohortFind && window.__cohortFind(\(arrStr)[0], \(dir));", completionHandler: nil)
+            }
+        }
+        if lastCommandToken != epubCommandToken, let cmd = epubPendingCommand {
+            lastCommandToken = epubCommandToken
+            switch cmd {
+            case "scrollDown":
+                web.evaluateJavaScript("window.__cohortScrollBy && window.__cohortScrollBy(140);", completionHandler: nil)
+            case "scrollUp":
+                web.evaluateJavaScript("window.__cohortScrollBy && window.__cohortScrollBy(-140);", completionHandler: nil)
+            case "pageNext":
+                web.evaluateJavaScript("window.__cohortScrollBy && window.__cohortScrollBy(Math.max(240, window.innerHeight * 0.85));", completionHandler: nil)
+            case "pagePrev":
+                web.evaluateJavaScript("window.__cohortScrollBy && window.__cohortScrollBy(-Math.max(240, window.innerHeight * 0.85));", completionHandler: nil)
+            case "jumpTop":
+                web.evaluateJavaScript("window.__cohortJumpEdge && window.__cohortJumpEdge('top');", completionHandler: nil)
+            case "jumpBottom":
+                web.evaluateJavaScript("window.__cohortJumpEdge && window.__cohortJumpEdge('bottom');", completionHandler: nil)
+            default:
+                break
+            }
+        }
     }
 
     func webView(
@@ -1681,6 +1904,12 @@ private final class EPUBWebCoordinator: NSObject, WKURLSchemeHandler, WKScriptMe
             if let text = body["text"] as? String { onSelection(text) }
         case "zoneTap":
             if let zone = body["zone"] as? String { onZoneTap(zone) }
+        case "findStatus":
+            let cur = body["current"] as? Int ?? 0
+            let tot = body["total"] as? Int ?? 0
+            onFindStatus(cur, tot)
+        case "keyCommand":
+            if let key = body["key"] as? String { onKeyCommand(key) }
         default:
             break
         }
@@ -1694,6 +1923,7 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
     var onColumnsDetected: (Int) -> Void
     var onPageFrameChanged: (CGRect) -> Void
     var onCenterTap: () -> Void
+    var onFindStatus: (Int, Int) -> Void
     private weak var pdfView: PDFView?
     private nonisolated(unsafe) var observers: [NSObjectProtocol] = []
 
@@ -1703,6 +1933,10 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
     private var appliedCropState: Bool?
     private var lastHighlightKey: String = ""
     private var lastSearchQuery: String = ""
+    private var lastFindActionToken: Int = 0
+    private var cachedFindSelections: [PDFSelection] = []
+    private var cachedFindIndex: Int = 0
+    private var lastPDFCommandToken: Int = 0
     private var lastReportedSelection: String = ""
     private var lastZoomScale: Double = 1.0
     private var lastColumnKey: String = ""
@@ -1712,13 +1946,15 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
         onSelectionChanged: @escaping (String) -> Void,
         onColumnsDetected: @escaping (Int) -> Void,
         onPageFrameChanged: @escaping (CGRect) -> Void,
-        onCenterTap: @escaping () -> Void
+        onCenterTap: @escaping () -> Void,
+        onFindStatus: @escaping (Int, Int) -> Void
     ) {
         self.onPageChanged = onPageChanged
         self.onSelectionChanged = onSelectionChanged
         self.onColumnsDetected = onColumnsDetected
         self.onPageFrameChanged = onPageFrameChanged
         self.onCenterTap = onCenterTap
+        self.onFindStatus = onFindStatus
     }
 
     func observe(_ pdfView: PDFView) {
@@ -1770,7 +2006,11 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
         twoUpMode: Bool,
         zoomScale: Double,
         highlights: [ReadingHighlight],
-        searchQuery: String?
+        searchQuery: String?,
+        inlineFindActionToken: Int,
+        inlineFindDirection: Int,
+        pdfCommandToken: Int,
+        pdfPendingCommand: String?
     ) {
         let desiredDisplayMode: PDFDisplayMode = (twoUpMode && !twoColumnMode) ? .twoUpContinuous : .singlePageContinuous
         if view.displayMode != desiredDisplayMode {
@@ -1783,6 +2023,8 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
             appliedCropState = nil
             lastHighlightKey = ""
             lastSearchQuery = ""
+            cachedFindSelections = []
+            cachedFindIndex = 0
             lastZoomScale = 1.0
             lastColumnKey = ""
             view.document = PDFDocument(url: url)
@@ -1809,13 +2051,35 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
         }
 
         let cleanQuery = searchQuery?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if lastSearchQuery != cleanQuery {
+        if lastFindActionToken != inlineFindActionToken || lastSearchQuery != cleanQuery {
+            let queryChanged = lastSearchQuery.lowercased() != cleanQuery.lowercased()
+            lastFindActionToken = inlineFindActionToken
             lastSearchQuery = cleanQuery
-            if cleanQuery.count >= 2 {
-                let hits = doc.findString(cleanQuery, withOptions: .caseInsensitive)
-                view.highlightedSelections = Array(hits.prefix(40))
-            } else {
+            if cleanQuery.isEmpty {
+                cachedFindSelections = []
+                cachedFindIndex = 0
                 view.highlightedSelections = nil
+                Task { @MainActor in onFindStatus(0, 0) }
+            } else {
+                if queryChanged {
+                    cachedFindSelections = Array(doc.findString(cleanQuery, withOptions: .caseInsensitive).prefix(200))
+                    cachedFindIndex = 0
+                } else if !cachedFindSelections.isEmpty {
+                    let total = cachedFindSelections.count
+                    let step = inlineFindDirection < 0 ? -1 : 1
+                    cachedFindIndex = ((cachedFindIndex + step) % total + total) % total
+                }
+                view.highlightedSelections = cachedFindSelections.isEmpty ? nil : cachedFindSelections
+                if !cachedFindSelections.isEmpty {
+                    let hit = cachedFindSelections[cachedFindIndex]
+                    view.setCurrentSelection(hit, animate: false)
+                    view.go(to: hit)
+                    let idxPlus = cachedFindIndex + 1
+                    let total = cachedFindSelections.count
+                    Task { @MainActor in onFindStatus(idxPlus, total) }
+                } else {
+                    Task { @MainActor in onFindStatus(0, 0) }
+                }
             }
         }
 
@@ -1823,6 +2087,43 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
            let target = doc.page(at: pageIndex),
            view.currentPage != target {
             view.go(to: target)
+        }
+
+        if lastPDFCommandToken != pdfCommandToken, let cmd = pdfPendingCommand {
+            lastPDFCommandToken = pdfCommandToken
+            switch cmd {
+            case "jumpTop":
+                if let first = doc.page(at: 0) { view.go(to: first) }
+            case "jumpBottom":
+                if doc.pageCount > 0, let last = doc.page(at: doc.pageCount - 1) { view.go(to: last) }
+            case "scrollDown", "scrollUp", "pageDown", "pageUp":
+                let isUp = (cmd == "scrollUp" || cmd == "pageUp")
+                let isPage = (cmd == "pageDown" || cmd == "pageUp")
+                #if canImport(AppKit)
+                if let sv = view.documentView?.enclosingScrollView, let docView = view.documentView {
+                    let step = isPage ? max(240, sv.contentView.bounds.height * 0.85) : 140
+                    let signedDelta = isUp ? -step : step
+                    var pt = sv.contentView.bounds.origin
+                    if docView.isFlipped {
+                        let maxY = max(0, docView.bounds.height - sv.contentView.bounds.height)
+                        pt.y = min(max(0, pt.y + signedDelta), maxY)
+                    } else {
+                        let maxY = max(0, docView.bounds.height - sv.contentView.bounds.height)
+                        pt.y = min(max(0, pt.y - signedDelta), maxY)
+                    }
+                    sv.contentView.scroll(to: pt)
+                    sv.reflectScrolledClipView(sv.contentView)
+                } else if isUp {
+                    view.goToPreviousPage(nil)
+                } else {
+                    view.goToNextPage(nil)
+                }
+                #else
+                if isUp { view.goToPreviousPage(nil) } else { view.goToNextPage(nil) }
+                #endif
+            default:
+                break
+            }
         }
 
         if let currentPage = view.currentPage {

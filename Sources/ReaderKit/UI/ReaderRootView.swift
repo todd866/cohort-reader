@@ -25,20 +25,20 @@ public struct ReaderRootView: View {
         Group {
             #if os(macOS)
             GeometryReader { geo in
-                if geo.size.width >= 760 {
+                let focusHidden = vm.selectedTab == .read && vm.isReaderChromeHidden && (vm.activeEPUB != nil || vm.activePDFURL != nil) && !isSnapshot
+                let showSidebar = geo.size.width >= 760 && !vm.isSidebarCollapsed && !focusHidden
+                if showSidebar {
                     HStack(spacing: 0) {
-                        if !(vm.selectedTab == .read && vm.isReaderChromeHidden && (vm.activeEPUB != nil || vm.activePDFURL != nil) && !isSnapshot) {
-                            desktopSidebarRail
-                            Divider()
-                        }
-                        mainColumn(includeTabBar: false)
+                        desktopSidebarRail
+                        Divider()
+                        mainColumn(includeTabBar: false, isSidebarVisible: true)
                     }
                 } else {
-                    mainColumn(includeTabBar: true)
+                    mainColumn(includeTabBar: geo.size.width < 760, isSidebarVisible: false)
                 }
             }
             #else
-            mainColumn(includeTabBar: true)
+            mainColumn(includeTabBar: true, isSidebarVisible: false)
             #endif
         }
         .background(ReaderPalette.background)
@@ -100,6 +100,13 @@ public struct ReaderRootView: View {
                 }
             }
             return handled
+        }
+        .overlay {
+            if vm.isCommandPalettePresented {
+                CommandPaletteOverlay(vm: vm)
+            } else if vm.isShortcutsHUDPresented {
+                KeyboardShortcutsOverlay(vm: vm)
+            }
         }
         .overlay(alignment: .bottom) {
             if let toast = vm.toastMessage, !isSnapshot {
@@ -166,14 +173,14 @@ public struct ReaderRootView: View {
         )
     }
 
-    private func mainColumn(includeTabBar: Bool) -> some View {
+    private func mainColumn(includeTabBar: Bool, isSidebarVisible: Bool) -> some View {
         VStack(spacing: 0) {
             Group {
                 switch vm.selectedTab {
                 case .shelf:
                     ShelfView(vm: vm, onImportTap: { vm.requestFileImport() })
                 case .read:
-                    ReaderPaneView(vm: vm)
+                    ReaderPaneView(vm: vm, isSidebarVisible: isSidebarVisible)
                 case .map:
                     ManifoldMapView(vm: vm)
                 case .search:
@@ -220,91 +227,189 @@ public struct ReaderRootView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 7) {
                 Image(systemName: "books.vertical.fill")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 13.5, weight: .semibold))
                     .foregroundStyle(ReaderPalette.accent)
                 Text("Cohort Reader")
                     .font(.system(size: 13.5, weight: .semibold, design: .serif))
                     .foregroundStyle(ReaderPalette.label)
                     .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 4)
+                Button {
+                    vm.toggleSidebar()
+                } label: {
+                    Image(systemName: "sidebar.left")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(ReaderPalette.secondary)
+                        .padding(4)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Hide Sidebar")
+                .help("Hide Sidebar (⌘\\)")
             }
             .padding(.horizontal, 10)
-            .padding(.top, 14)
-            .padding(.bottom, 8)
+            .padding(.top, 12)
+            .padding(.bottom, 4)
 
-            ForEach(ReaderTab.allCases, id: \.self) { tab in
+            Button {
+                vm.openCommandPalette()
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(ReaderPalette.secondary)
+                    Text("Quick Open…")
+                        .font(.system(size: 12))
+                        .foregroundStyle(ReaderPalette.secondary)
+                    Spacer()
+                    KeycapBadge("⌘K")
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(ReaderPalette.background.opacity(0.75), in: RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(ReaderPalette.hairline, lineWidth: 0.75))
+            }
+            .buttonStyle(.plain)
+            .help("Command Palette (⌘K)")
+            .padding(.bottom, 4)
+
+            ForEach(Array(ReaderTab.allCases.enumerated()), id: \.element) { idx, tab in
                 let isSelected = vm.selectedTab == tab
                 Button {
                     vm.selectedTab = tab
                 } label: {
                     HStack(spacing: 9) {
                         Image(systemName: tab.symbol)
-                            .font(.system(size: 13.5, weight: isSelected ? .semibold : .regular))
-                            .frame(width: 18)
+                            .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                            .frame(width: 17)
                         Text(tab.rawValue)
                             .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
                         Spacer()
+                        KeycapBadge("⌘\(idx + 1)")
                     }
                     .foregroundStyle(isSelected ? ReaderPalette.accent : ReaderPalette.label)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6.5)
                     .background(
-                        isSelected ? ReaderPalette.accent.opacity(0.12) : Color.clear,
+                        isSelected ? ReaderPalette.accent.opacity(0.11) : Color.clear,
                         in: RoundedRectangle(cornerRadius: 7)
                     )
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help("\(tab.rawValue) (⌘\(idx + 1))")
             }
 
             Divider()
-                .padding(.vertical, 6)
+                .padding(.vertical, 5)
 
             Button {
                 vm.openExternalFileWithPanel()
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "doc.badge.plus")
-                        .font(.system(size: 13))
-                        .frame(width: 18)
-                    Text("Open PDF…")
+                        .font(.system(size: 12.5))
+                        .frame(width: 17)
+                    Text("Open File…")
                         .font(.system(size: 12.5, weight: .medium))
                     Spacer()
+                    KeycapBadge("⌘O")
                 }
                 .foregroundStyle(ReaderPalette.label)
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 9)
                 .padding(.vertical, 6)
                 .background(ReaderPalette.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 7))
                 .overlay(RoundedRectangle(cornerRadius: 7).stroke(ReaderPalette.hairline, lineWidth: 0.75))
             }
             .buttonStyle(.plain)
+            .help("Open PDF or EPUB (⌘O)")
+
+            if !vm.openTabs.isEmpty {
+                Divider()
+                    .padding(.vertical, 5)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(vm.openTabs.prefix(5).enumerated()), id: \.element.id) { idx, tab in
+                        let active = vm.activeBook?.id == tab.id
+                        HStack(spacing: 6) {
+                            Button {
+                                Task { await vm.selectTab(id: tab.id) }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Circle()
+                                        .fill(active ? ReaderPalette.accent : ReaderPalette.secondary.opacity(0.35))
+                                        .frame(width: 5.5, height: 5.5)
+                                    Text(tab.book.title)
+                                        .font(.system(size: 11.5, weight: active ? .semibold : .regular))
+                                        .foregroundStyle(active ? ReaderPalette.label : ReaderPalette.secondary)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 2)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help("\(tab.book.title) (⌥⌘\(idx + 1))")
+
+                            Button {
+                                Task { await vm.closeTab(id: tab.id) }
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 8.5, weight: .semibold))
+                                    .foregroundStyle(ReaderPalette.secondary.opacity(0.65))
+                                    .padding(3)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Close \(tab.book.title)")
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            active ? ReaderPalette.background.opacity(0.8) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 6)
+                        )
+                    }
+                }
+            }
 
             Spacer()
 
-            Button {
-                vm.activeSheet = .settings
-            } label: {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(vm.isServerConnected ? ReaderPalette.cohortGreen : ReaderPalette.secondary.opacity(0.5))
-                        .frame(width: 7, height: 7)
-                    Text(vm.isServerConnected ? "Home Connected" : "Settings")
-                        .font(.system(size: 12))
-                        .foregroundStyle(ReaderPalette.secondary)
-                        .lineLimit(1)
-                    Spacer()
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 12))
-                        .foregroundStyle(ReaderPalette.secondary)
+            Divider()
+
+            HStack(spacing: 6) {
+                Button {
+                    vm.activeSheet = .settings
+                } label: {
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(vm.isServerConnected ? ReaderPalette.cohortGreen : ReaderPalette.secondary.opacity(0.5))
+                            .frame(width: 7, height: 7)
+                        Text(vm.isServerConnected ? "Home Sync" : "Settings")
+                            .font(.system(size: 12))
+                            .foregroundStyle(ReaderPalette.secondary)
+                            .lineLimit(1)
+                        Spacer()
+                        KeycapBadge("⌘,")
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .help("Settings (⌘,)")
+
+                Button {
+                    vm.toggleShortcutsHUD()
+                } label: {
+                    KeycapBadge("?")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Keyboard Shortcuts")
+                .help("Keyboard Shortcuts (? or ⌘/)")
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 8)
         .padding(.bottom, 10)
-        .frame(width: 176)
+        .frame(width: 222)
         .frame(maxHeight: .infinity)
         .background(ReaderPalette.surface)
     }

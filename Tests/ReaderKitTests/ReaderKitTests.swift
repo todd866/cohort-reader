@@ -323,7 +323,7 @@ struct ReaderKitTests {
             resolvedTheme: .ink,
             highlights: [sampleHL]
         )
-        #expect(html.contains("--cr-bg: #111114"))
+        #expect(html.contains("--cr-bg: #121110"))
         #expect(html.contains("cold northern breeze"))
         #expect(html.contains("__cohortApplyTypography"))
         let updateJS = EPUBHTMLComposer.typographyUpdateJS(typography: decoded, resolvedTheme: .sepia)
@@ -854,6 +854,119 @@ struct ReaderKitTests {
         ])
         #expect(vm.activeBook?.id == "gutenberg-84")
         #expect(vm.activeEPUBSpineIndex == 1)
+    }
+
+    @Test("Command palette filtering, unified scale/theme, hierarchical Esc, and single-key dispatch")
+    @MainActor
+    func commandPaletteUnifiedScaleAndKeyDispatch() async throws {
+        let dbTmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vm-keys-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dbTmp) }
+        try FileManager.default.createDirectory(at: dbTmp, withIntermediateDirectories: true)
+
+        var box = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let pdfURL = dbTmp.appendingPathComponent("keys-sample.pdf")
+        let ctx = try #require(CGContext(pdfURL as CFURL, mediaBox: &box, nil))
+        ctx.beginPDFPage(nil)
+        ctx.endPDFPage()
+        ctx.closePDF()
+
+        let store = try ReaderStore(dbPath: dbTmp.appendingPathComponent("keys.sqlite").path, cacheRoot: dbTmp)
+        let vm = ReaderViewModel(
+            store: store,
+            defaults: UserDefaults(suiteName: "cohort-keys-\(UUID().uuidString)")!,
+            signatureStoreURL: dbTmp.appendingPathComponent("sigs.json")
+        )
+        await vm.bootstrap(loadSampleBook: true, runNetworkSync: false)
+
+        // 1. Archival EPUB CSS/JS helpers present
+        let lightHTML = EPUBHTMLComposer.composeChapterHTML(
+            rawXHTML: "<html><body><p>Test</p></body></html>",
+            typography: .default,
+            notes: [],
+            initialFraction: 0,
+            initialWordOffset: nil,
+            resolvedTheme: .paper
+        )
+        #expect(lightHTML.contains("#9E3424"))
+        #expect(lightHTML.contains("max-width: 660px"))
+        #expect(lightHTML.contains("window.__cohortFind"))
+
+        let darkHTML = EPUBHTMLComposer.composeChapterHTML(
+            rawXHTML: "<html><body><p>Test</p></body></html>",
+            typography: .default,
+            notes: [],
+            initialFraction: 0,
+            initialWordOffset: nil,
+            resolvedTheme: .ink
+        )
+        #expect(darkHTML.contains("#E2735B"))
+
+        // 2. Unified scale & theme on EPUB
+        vm.selectedTab = .read
+        let initialSize = vm.typography.fontSize
+        vm.increaseReadingScale()
+        #expect(vm.typography.fontSize == initialSize + 1)
+        vm.decreaseReadingScale()
+        #expect(vm.typography.fontSize == initialSize)
+        vm.typography.fontSize = 24
+        vm.resetReadingScale()
+        #expect(vm.typography.fontSize == 18)
+        let initialTheme = vm.typography.theme
+        vm.cycleActiveReadingTheme()
+        #expect(vm.typography.theme != initialTheme)
+        vm.toggleEPUBReadingFlow()
+        #expect(vm.typography.readingFlow == .paginated)
+
+        // 3. Single-key dispatch on EPUB + hierarchical Escape
+        #expect(vm.handleSingleKeyCommand("?"))
+        #expect(vm.isShortcutsHUDPresented == true)
+        #expect(vm.handleEscapeKey() == true)
+        #expect(vm.isShortcutsHUDPresented == false)
+
+        #expect(vm.handleSingleKeyCommand("/"))
+        #expect(vm.isInlineFindPresented == true)
+        vm.updateInlineFindQuery("Victor")
+        vm.stepInlineFind(delta: -1)
+        #expect(vm.inlineFindDirection == -1)
+        #expect(vm.handleEscapeKey() == true)
+        #expect(vm.isInlineFindPresented == false)
+
+        #expect(vm.handleSingleKeyCommand(":"))
+        #expect(vm.isGoToPagePresented == true)
+        #expect(vm.handleEscapeKey() == true)
+        #expect(vm.isGoToPagePresented == false)
+
+        #expect(vm.handleSingleKeyCommand("f"))
+        #expect(vm.isReaderChromeHidden == true)
+        #expect(vm.handleEscapeKey() == true)
+        #expect(vm.isReaderChromeHidden == false)
+
+        // 4. Command palette filtering & action execution
+        vm.openCommandPalette()
+        vm.commandPaletteQuery = "Sidebar"
+        let sidebarHits = vm.commandPaletteItems()
+        #expect(sidebarHits.contains(where: { $0.id == "act:toggle-sidebar" }))
+        await vm.executeCommandPaletteItem(try #require(sidebarHits.first(where: { $0.id == "act:toggle-sidebar" })))
+        #expect(vm.isSidebarCollapsed == true)
+        #expect(vm.isCommandPalettePresented == false)
+
+        // 5. Switch to PDF -> unified scale & PDF single-key commands
+        await vm.quickOpenExternalFile(from: pdfURL)
+        #expect(vm.activePDFURL == pdfURL)
+        vm.increaseReadingScale()
+        #expect(vm.pdfZoomScale > 1.0)
+        vm.resetReadingScale()
+        #expect(vm.pdfZoomScale == 1.0)
+        #expect(vm.handleSingleKeyCommand("2"))
+        #expect(vm.pdfTwoUpMode == true)
+        #expect(vm.handleSingleKeyCommand("c"))
+        #expect(vm.pdfAutoCropEnabled == true)
+
+        // 6. Shelf focus navigation
+        vm.selectedTab = .shelf
+        #expect(vm.handleSingleKeyCommand("j"))
+        #expect(vm.focusedShelfBookId != nil)
     }
 }
 
