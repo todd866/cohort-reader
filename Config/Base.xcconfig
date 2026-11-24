@@ -1,0 +1,4 @@
+// Base Xcode configuration for Cohort Reader (safe for public repo).
+#include? "Local.xcconfig"
+DEVELOPMENT_TEAM = $(COHORT_READER_TEAM)
+COHORT_READER_DEFAULT_SERVER = $(COHORT_READER_LOCAL_SERVER)

@@ -1,0 +1,13 @@
+server/
+scripts/publish-public.sh
+scripts/public-images-approved.txt
+Config/Local.xcconfig
+.DS_Store
+__pycache__/
+*.pyc
+.pytest_cache/
+CohortReader.xcodeproj/
+.build/
+.swiftpm/
+DerivedData/
+shots/

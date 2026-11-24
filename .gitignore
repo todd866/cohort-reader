@@ -1,0 +1,15 @@
+.build/
+.swiftpm/
+.DS_Store
+CohortReader.xcodeproj/
+DerivedData/
+shots/
+Config/Local.xcconfig
+*.local.xcconfig
+*.local.json
+*.local.env
+__pycache__/
+*.pyc
+.pytest_cache/
+server/*.db
+server/*.log
