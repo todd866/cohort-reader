@@ -33,322 +33,401 @@ public struct ReaderPaneView: View {
         let showTabStrip = (!vm.isReaderChromeHidden || isSnapshot) && vm.openTabs.count > 1
         #endif
 
-        VStack(spacing: 0) {
-            if showTabStrip {
-                openTabsStrip(chromeBg: chromeBg, chromeFg: chromeFg)
-            }
+        GeometryReader { paneGeo in
+            let paneWidth = paneGeo.size.width
+            let isCompactWidth = paneWidth < 600
+            let isWideDesktop = paneWidth >= 760
+            let iconPad: CGFloat = isCompactWidth ? 4 : 5
 
-            if (!vm.isReaderChromeHidden || isSnapshot) && vm.activeTabIsQuickOpen {
-                HStack(spacing: 8) {
-                    Image(systemName: "bolt.doc")
-                        .font(.system(size: 11))
-                        .foregroundStyle(ReaderPalette.accent)
-                    Text("Quick Open · local file")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(chromeFg.opacity(0.75))
-                    Spacer()
-                    if vm.isServerConnected {
-                        Button {
-                            Task { await vm.sendActiveDocumentToHomeInbox() }
-                        } label: {
-                            #if os(macOS)
-                            Label(vm.isSendingToInbox ? "Sending…" : "Send to Phone", systemImage: "iphone.and.arrow.forward")
-                            #else
-                            Label(vm.isSendingToInbox ? "Sending…" : "Sync to Mac", systemImage: "laptopcomputer.and.arrow.down")
-                            #endif
-                        }
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(ReaderPalette.cohortGreen)
-                        .buttonStyle(.plain)
-                        .disabled(vm.isSendingToInbox)
-                    }
-                    Button {
-                        Task { await vm.promoteActiveQuickOpenToLibrary() }
-                    } label: {
-                        Text("Save to Library")
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(ReaderPalette.accent)
-                    }
-                    .buttonStyle(.plain)
+            VStack(spacing: 0) {
+                if showTabStrip {
+                    openTabsStrip(chromeBg: chromeBg, chromeFg: chromeFg)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-                .background(ReaderPalette.surface.opacity(0.85))
-                Divider()
-            }
 
-            if !vm.isReaderChromeHidden || isSnapshot {
-                // Top Reader Bar
-                HStack(spacing: 6) {
-                    #if os(macOS)
-                    if !isSidebarVisible {
+                if (!vm.isReaderChromeHidden || isSnapshot) && vm.activeTabIsQuickOpen {
+                    HStack(spacing: 8) {
+                        Image(systemName: "bolt.doc")
+                            .font(.system(size: 11))
+                            .foregroundStyle(ReaderPalette.accent)
+                        Text("Quick Open · local file")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(chromeFg.opacity(0.75))
+                        Spacer()
+                        if vm.isServerConnected {
+                            Button {
+                                Task { await vm.sendActiveDocumentToHomeInbox() }
+                            } label: {
+                                #if os(macOS)
+                                Label(vm.isSendingToInbox ? "Sending…" : "Send to Phone", systemImage: "iphone.and.arrow.forward")
+                                #else
+                                Label(vm.isSendingToInbox ? "Sending…" : "Sync to Mac", systemImage: "laptopcomputer.and.arrow.down")
+                                #endif
+                            }
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(ReaderPalette.cohortGreen)
+                            .buttonStyle(.plain)
+                            .disabled(vm.isSendingToInbox)
+                        }
                         Button {
-                            vm.toggleSidebar()
+                            Task { await vm.promoteActiveQuickOpenToLibrary() }
                         } label: {
-                            Image(systemName: "sidebar.left")
-                                .font(.system(size: 13.5, weight: .medium))
+                            Text("Save to Library")
+                                .font(.system(size: 11.5, weight: .semibold))
                                 .foregroundStyle(ReaderPalette.accent)
-                                .padding(5)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Show Sidebar")
-                        .help("Show Sidebar (⌘\\)")
                     }
-                    #else
-                    Button {
-                        ReaderHaptics.selection()
-                        vm.cancelActiveOpen()
-                        vm.selectedTab = .shelf
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 13, weight: .semibold))
-                            Text("Library")
-                                .font(.system(size: 13, weight: .medium))
-                                .lineLimit(1)
-                        }
-                        .fixedSize(horizontal: true, vertical: false)
-                        .foregroundStyle(ReaderPalette.accent)
-                        .padding(.vertical, 4)
-                        .padding(.trailing, 2)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Back to Library")
-                    #endif
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(ReaderPalette.surface.opacity(0.85))
+                    Divider()
+                }
 
-                    Button {
-                        vm.activeSheet = .toc
-                    } label: {
-                        Image(systemName: "list.bullet")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(chromeFg)
-                            .padding(5)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(vm.activeBook == nil)
-                    .accessibilityLabel("Contents, Notes & Find")
-                    .help("Contents & Notes (⌘T)")
-
-                    #if os(macOS)
-                    if vm.activeBook != nil {
-                        Button {
-                            vm.openInlineFind()
-                        } label: {
-                            Image(systemName: "magnifyingglass")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(vm.isInlineFindPresented ? ReaderPalette.accent : chromeFg)
-                                .padding(5)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Find in Document")
-                        .help("Find Inline (⌘F or /)")
-                    }
-                    #endif
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(vm.activeBook?.title ?? "No document open")
-                            .font(.system(size: 13.5, weight: .semibold, design: .serif))
-                            .foregroundStyle(chromeFg)
-                            .lineLimit(1)
-                            .help(vm.activeBook?.title ?? "")
-                        if let sub = currentSubtitle {
-                            Text(sub)
-                                .font(.system(size: 11))
-                                .foregroundStyle(chromeFg.opacity(0.65))
-                                .lineLimit(1)
-                                .help(sub)
-                        }
-                    }
-                    .frame(minWidth: 64, maxWidth: .infinity, alignment: .leading)
-
-                    if vm.activeBook != nil {
-                        if isPDFActive {
-                            Button {
-                                ReaderHaptics.selection()
-                                vm.togglePDFAutoCrop()
-                            } label: {
-                                Image(systemName: "crop")
-                                    .font(.system(size: 13.5, weight: .medium))
-                                    .foregroundStyle(vm.pdfAutoCropEnabled ? ReaderPalette.accent : chromeFg)
-                                    .padding(5)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Crop Margins")
-                            .help("Trim wide PDF margins (⌥⌘C or c)")
-
-                            if isSnapshot {
-                                Image(systemName: vm.pdfAppearance.symbol)
-                                    .font(.system(size: 13.5, weight: .medium))
-                                    .foregroundStyle(vm.pdfAppearance == .auto ? chromeFg : ReaderPalette.accent)
-                                    .padding(5)
-                            } else {
-                                Menu {
-                                    Section("Paper Appearance") {
-                                        ForEach(PDFPaperAppearance.allCases, id: \.self) { mode in
-                                            Button {
-                                                ReaderHaptics.selection()
-                                                vm.setPDFAppearance(mode)
-                                            } label: {
-                                                if vm.pdfAppearance == mode {
-                                                    Label(mode.label, systemImage: "checkmark")
-                                                } else {
-                                                    Label(mode.label, systemImage: mode.symbol)
-                                                }
-                                            }
-                                        }
-                                    }
-                                    #if os(macOS)
-                                    Section("Zoom & Layout") {
-                                        Button {
-                                            ReaderHaptics.selection()
-                                            vm.togglePDFTwoUpMode()
-                                        } label: {
-                                            Label("Two-Page Spread", systemImage: vm.pdfTwoUpMode ? "checkmark" : "book")
-                                        }
-                                        Button { vm.zoomInPDF() } label: {
-                                            Label("Zoom In", systemImage: "plus.magnifyingglass")
-                                        }
-                                        Button { vm.zoomOutPDF() } label: {
-                                            Label("Zoom Out", systemImage: "minus.magnifyingglass")
-                                        }
-                                        Button { vm.resetPDFZoom() } label: {
-                                            Label("Fit Page", systemImage: "arrow.up.left.and.arrow.down.right")
-                                        }
-                                    }
-                                    #endif
-                                    Section("Navigation & Sync") {
-                                        Button {
-                                            vm.tocSegment = 0
-                                            vm.tocShowsPDFThumbnails = true
-                                            vm.activeSheet = .toc
-                                        } label: {
-                                            Label("Go to Page & Thumbnails…", systemImage: "square.grid.2x2")
-                                        }
-                                        if vm.isServerConnected {
-                                            Button {
-                                                Task { await vm.sendActiveDocumentToHomeInbox() }
-                                            } label: {
-                                                #if os(macOS)
-                                                Label("Send to Phone", systemImage: "iphone.and.arrow.forward")
-                                                #else
-                                                Label("Sync to Mac", systemImage: "laptopcomputer.and.arrow.down")
-                                                #endif
-                                            }
-                                            .disabled(vm.isSendingToInbox)
-                                        }
-                                    }
-                                } label: {
-                                    Image(systemName: vm.pdfAppearance.symbol)
-                                        .font(.system(size: 13.5, weight: .medium))
-                                        .foregroundStyle(vm.pdfAppearance == .auto ? chromeFg : ReaderPalette.accent)
-                                        .padding(5)
-                                }
-                                .menuStyle(.borderlessButton)
-                                .fixedSize()
-                                .accessibilityLabel("PDF Paper Theme & Zoom")
-                                .help("Paper Theme & Zoom")
-                            }
-
-                            if vm.pdfDetectedColumnCount > 1 || vm.pdfTwoColumnMode {
-                                Button {
-                                    ReaderHaptics.selection()
-                                    vm.pdfTwoColumnMode.toggle()
-                                    vm.pdfTwoColumnStep = 0
-                                } label: {
-                                    Image(systemName: "rectangle.split.2x1")
-                                        .font(.system(size: 13.5, weight: .medium))
-                                        .foregroundStyle(vm.pdfTwoColumnMode ? ReaderPalette.accent : chromeFg)
-                                        .padding(5)
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("Column Flow")
-                                .help("Step down academic columns")
-                            }
-
-                            Button {
-                                ReaderHaptics.light()
-                                vm.activeSheet = .pdfSign
-                            } label: {
-                                ZStack(alignment: .topTrailing) {
-                                    Image(systemName: "signature")
-                                        .font(.system(size: 14, weight: .medium))
-                                        .foregroundStyle(vm.pendingPDFStamps.isEmpty ? chromeFg : ReaderPalette.accent)
-                                        .padding(6)
-                                    if !vm.pendingPDFStamps.isEmpty {
-                                        Circle()
-                                            .fill(ReaderPalette.cohortGreen)
-                                            .frame(width: 6, height: 6)
-                                            .offset(x: -2, y: 2)
-                                    }
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Sign PDF")
-                            .help("Sign & Stamp PDF (⌥⌘S or s)")
-                        } else {
-                            Button {
-                                let sampleQuote = vm.activeSelectionText.isEmpty
-                                    ? (vm.currentChapter()?.plainText.split(separator: ".").first.map(String.init) ?? vm.activeBook?.summary ?? "")
-                                    : vm.activeSelectionText
-                                vm.prepareCohortDraft(quote: sampleQuote)
-                            } label: {
-                                Image(systemName: "rectangle.badge.plus")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundStyle(chromeFg)
-                                    .padding(6)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Send passage to Cohort")
-                            .help("Send Selection to Cohort (⇧⌘C)")
-
-                            Button {
-                                vm.activeSheet = .typography
-                            } label: {
-                                Text("Aa")
-                                    .font(.system(size: 13, weight: .semibold, design: .serif))
-                                    .foregroundStyle(chromeFg)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 4)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Typography")
-                            .help("Typography & Flow (⇧⌘T)")
-                        }
-
+                if !vm.isReaderChromeHidden || isSnapshot {
+                    // Top Reader Bar
+                    HStack(spacing: isCompactWidth ? 4 : 6) {
                         #if os(macOS)
+                        if isWideDesktop && !isSidebarVisible {
+                            Button {
+                                vm.toggleSidebar()
+                            } label: {
+                                Image(systemName: "sidebar.left")
+                                    .font(.system(size: 13.5, weight: .medium))
+                                    .foregroundStyle(ReaderPalette.accent)
+                                    .padding(iconPad)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Show Sidebar")
+                            .help("Show Sidebar (⌘\\)")
+                        }
+                        #else
                         Button {
-                            vm.toggleShortcutsHUD()
+                            ReaderHaptics.selection()
+                            vm.cancelActiveOpen()
+                            vm.selectedTab = .shelf
                         } label: {
-                            Image(systemName: "keyboard")
-                                .font(.system(size: 12.5, weight: .medium))
-                                .foregroundStyle(vm.isShortcutsHUDPresented ? ReaderPalette.accent : chromeFg)
-                                .padding(5)
+                            HStack(spacing: 3) {
+                                Image(systemName: "chevron.left")
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text("Library")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .lineLimit(1)
+                            }
+                            .fixedSize(horizontal: true, vertical: false)
+                            .foregroundStyle(ReaderPalette.accent)
+                            .padding(.vertical, 4)
+                            .padding(.trailing, 2)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Keyboard Shortcuts")
-                        .help("Keyboard Shortcuts (? or ⌘/)")
+                        .accessibilityLabel("Back to Library")
                         #endif
 
                         Button {
-                            ReaderHaptics.light()
-                            withAnimation(.easeInOut(duration: 0.18)) {
-                                vm.isReaderChromeHidden.toggle()
-                            }
+                            vm.activeSheet = .toc
                         } label: {
-                            Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                .font(.system(size: 12.5, weight: .medium))
+                            Image(systemName: "list.bullet")
+                                .font(.system(size: 14, weight: .medium))
                                 .foregroundStyle(chromeFg)
-                                .padding(6)
+                                .padding(iconPad)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Focus Reading")
-                        .help("Focus Reading (⌘. or f)")
+                        .disabled(vm.activeBook == nil)
+                        .accessibilityLabel("Contents, Notes & Find")
+                        .help("Contents & Notes (⌘T)")
+
+                        #if os(macOS)
+                        if !isCompactWidth && vm.activeBook != nil {
+                            Button {
+                                vm.openInlineFind()
+                            } label: {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(vm.isInlineFindPresented ? ReaderPalette.accent : chromeFg)
+                                    .padding(iconPad)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Find in Document")
+                            .help("Find Inline (⌘F or /)")
+                        }
+                        #endif
+
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(vm.activeBook?.title ?? "No document open")
+                                .font(.system(size: 13.5, weight: .semibold, design: .serif))
+                                .foregroundStyle(chromeFg)
+                                .lineLimit(1)
+                                .help(vm.activeBook?.title ?? "")
+                            if let sub = currentSubtitle {
+                                Text(sub)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(chromeFg.opacity(0.65))
+                                    .lineLimit(1)
+                                    .help(sub)
+                            }
+                        }
+                        .frame(minWidth: isCompactWidth ? 36 : 64, maxWidth: .infinity, alignment: .leading)
+
+                        if vm.activeBook != nil {
+                            if isPDFActive {
+                                #if os(macOS)
+                                let pdfLayouts: [PDFDisplayLayout] = isCompactWidth ? [.scroll, .page] : PDFDisplayLayout.allCases
+                                #else
+                                let pdfLayouts: [PDFDisplayLayout] = [.scroll, .page]
+                                #endif
+                                HStack(spacing: 1) {
+                                    ForEach(pdfLayouts, id: \.self) { layout in
+                                        let selected = vm.pdfDisplayLayout == layout
+                                        Button {
+                                            ReaderHaptics.selection()
+                                            vm.setPDFDisplayLayout(layout)
+                                        } label: {
+                                            Text(layout.rawValue)
+                                                .font(.system(size: 10.5, weight: selected ? .semibold : .medium))
+                                                .foregroundStyle(selected ? .white : chromeFg.opacity(0.82))
+                                                .padding(.horizontal, isCompactWidth ? 6 : 7)
+                                                .padding(.vertical, 3.5)
+                                                .background(
+                                                    selected ? ReaderPalette.accent : Color.clear,
+                                                    in: Capsule()
+                                                )
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                                .fixedSize()
+                                .padding(2)
+                                .background(ReaderPalette.background.opacity(0.65), in: Capsule())
+                                .overlay(Capsule().stroke(ReaderPalette.hairline, lineWidth: 0.75))
+                                .help("PDF Layout: Scroll, Fit Page, or Spread (2 or ⌥⌘2)")
+
+                                Button {
+                                    ReaderHaptics.selection()
+                                    vm.togglePDFAutoCrop()
+                                } label: {
+                                    Image(systemName: "crop")
+                                        .font(.system(size: 13.5, weight: .medium))
+                                        .foregroundStyle(vm.pdfAutoCropEnabled ? ReaderPalette.accent : chromeFg)
+                                        .padding(iconPad)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Crop Margins")
+                                .help("Trim wide PDF margins (⌥⌘C or c)")
+
+                                if isSnapshot {
+                                    Image(systemName: vm.pdfAppearance.symbol)
+                                        .font(.system(size: 13.5, weight: .medium))
+                                        .foregroundStyle(vm.pdfAppearance == .auto ? chromeFg : ReaderPalette.accent)
+                                        .padding(iconPad)
+                                } else {
+                                    Menu {
+                                        Section("Paper Appearance") {
+                                            ForEach(PDFPaperAppearance.allCases, id: \.self) { mode in
+                                                Button {
+                                                    ReaderHaptics.selection()
+                                                    vm.setPDFAppearance(mode)
+                                                } label: {
+                                                    if vm.pdfAppearance == mode {
+                                                        Label(mode.label, systemImage: "checkmark")
+                                                    } else {
+                                                        Label(mode.label, systemImage: mode.symbol)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        #if os(macOS)
+                                        Section("Zoom & Layout") {
+                                            ForEach(PDFDisplayLayout.allCases, id: \.self) { layout in
+                                                Button {
+                                                    ReaderHaptics.selection()
+                                                    vm.setPDFDisplayLayout(layout)
+                                                } label: {
+                                                    if vm.pdfDisplayLayout == layout {
+                                                        Label(layout.rawValue, systemImage: "checkmark")
+                                                    } else {
+                                                        Label(layout.rawValue, systemImage: layout == .spread ? "book" : (layout == .page ? "doc" : "scroll"))
+                                                    }
+                                                }
+                                            }
+                                            Divider()
+                                            Button { vm.zoomInPDF() } label: {
+                                                Label("Zoom In", systemImage: "plus.magnifyingglass")
+                                            }
+                                            Button { vm.zoomOutPDF() } label: {
+                                                Label("Zoom Out", systemImage: "minus.magnifyingglass")
+                                            }
+                                            Button { vm.resetPDFZoom() } label: {
+                                                Label("Fit Page", systemImage: "arrow.up.left.and.arrow.down.right")
+                                            }
+                                        }
+                                        #endif
+                                        Section("Navigation & Sync") {
+                                            Button {
+                                                vm.tocSegment = 0
+                                                vm.tocShowsPDFThumbnails = true
+                                                vm.activeSheet = .toc
+                                            } label: {
+                                                Label("Go to Page & Thumbnails…", systemImage: "square.grid.2x2")
+                                            }
+                                            if vm.isServerConnected {
+                                                Button {
+                                                    Task { await vm.sendActiveDocumentToHomeInbox() }
+                                                } label: {
+                                                    #if os(macOS)
+                                                    Label("Send to Phone", systemImage: "iphone.and.arrow.forward")
+                                                    #else
+                                                    Label("Sync to Mac", systemImage: "laptopcomputer.and.arrow.down")
+                                                    #endif
+                                                }
+                                                .disabled(vm.isSendingToInbox)
+                                            }
+                                        }
+                                    } label: {
+                                        Image(systemName: vm.pdfAppearance.symbol)
+                                            .font(.system(size: 13.5, weight: .medium))
+                                            .foregroundStyle(vm.pdfAppearance == .auto ? chromeFg : ReaderPalette.accent)
+                                            .padding(iconPad)
+                                    }
+                                    .menuStyle(.borderlessButton)
+                                    .fixedSize()
+                                    .accessibilityLabel("PDF Paper Theme & Zoom")
+                                    .help("Paper Theme & Zoom")
+                                }
+
+                                if !isCompactWidth && (vm.pdfDetectedColumnCount > 1 || vm.pdfTwoColumnMode) {
+                                    Button {
+                                        ReaderHaptics.selection()
+                                        vm.pdfTwoColumnMode.toggle()
+                                        vm.pdfTwoColumnStep = 0
+                                    } label: {
+                                        Image(systemName: "rectangle.split.2x1")
+                                            .font(.system(size: 13.5, weight: .medium))
+                                            .foregroundStyle(vm.pdfTwoColumnMode ? ReaderPalette.accent : chromeFg)
+                                            .padding(iconPad)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Column Flow")
+                                    .help("Step down academic columns")
+                                }
+
+                                Button {
+                                    ReaderHaptics.light()
+                                    vm.activeSheet = .pdfSign
+                                } label: {
+                                    ZStack(alignment: .topTrailing) {
+                                        Image(systemName: "signature")
+                                            .font(.system(size: 14, weight: .medium))
+                                            .foregroundStyle(vm.pendingPDFStamps.isEmpty ? chromeFg : ReaderPalette.accent)
+                                            .padding(iconPad)
+                                        if !vm.pendingPDFStamps.isEmpty {
+                                            Circle()
+                                                .fill(ReaderPalette.cohortGreen)
+                                                .frame(width: 6, height: 6)
+                                                .offset(x: -2, y: 2)
+                                        }
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Sign PDF")
+                                .help("Sign & Stamp PDF (⌥⌘S or s)")
+                            } else {
+                                HStack(spacing: 1) {
+                                    ForEach([EPUBReadingFlow.paginated, EPUBReadingFlow.scroll], id: \.self) { flow in
+                                        let selected = vm.typography.readingFlow == flow
+                                        Button {
+                                            ReaderHaptics.selection()
+                                            if vm.typography.readingFlow != flow {
+                                                vm.typography.readingFlow = flow
+                                                vm.saveTypography()
+                                                vm.showToast("EPUB flow: \(flow.rawValue)")
+                                            }
+                                        } label: {
+                                            Text(flow.rawValue)
+                                                .font(.system(size: 10.5, weight: selected ? .semibold : .medium))
+                                                .foregroundStyle(selected ? .white : chromeFg.opacity(0.82))
+                                                .padding(.horizontal, isCompactWidth ? 6 : 7)
+                                                .padding(.vertical, 3.5)
+                                                .background(
+                                                    selected ? ReaderPalette.accent : Color.clear,
+                                                    in: Capsule()
+                                                )
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                                .fixedSize()
+                                .padding(2)
+                                .background(ReaderPalette.background.opacity(0.65), in: Capsule())
+                                .overlay(Capsule().stroke(ReaderPalette.hairline, lineWidth: 0.75))
+                                .help("Reading Layout: Pages vs Scroll (p or ⌥⌘P)")
+
+                                if !isCompactWidth {
+                                    Button {
+                                        let sampleQuote = vm.activeSelectionText.isEmpty
+                                            ? (vm.currentChapter()?.plainText.split(separator: ".").first.map(String.init) ?? vm.activeBook?.summary ?? "")
+                                            : vm.activeSelectionText
+                                        vm.prepareCohortDraft(quote: sampleQuote)
+                                    } label: {
+                                        Image(systemName: "rectangle.badge.plus")
+                                            .font(.system(size: 14, weight: .medium))
+                                            .foregroundStyle(chromeFg)
+                                            .padding(iconPad)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Send passage to Cohort")
+                                    .help("Send Selection to Cohort (⇧⌘C)")
+                                }
+
+                                Button {
+                                    vm.activeSheet = .typography
+                                } label: {
+                                    Text("Aa")
+                                        .font(.system(size: 13, weight: .semibold, design: .serif))
+                                        .fixedSize()
+                                        .foregroundStyle(chromeFg)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 4)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Typography")
+                                .help("Typography & Flow (⇧⌘T)")
+                            }
+
+                            #if os(macOS)
+                            if !isCompactWidth {
+                                Button {
+                                    vm.toggleShortcutsHUD()
+                                } label: {
+                                    Image(systemName: "keyboard")
+                                        .font(.system(size: 12.5, weight: .medium))
+                                        .foregroundStyle(vm.isShortcutsHUDPresented ? ReaderPalette.accent : chromeFg)
+                                        .padding(iconPad)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Keyboard Shortcuts")
+                                .help("Keyboard Shortcuts (? or ⌘/)")
+                            }
+                            #endif
+
+                            Button {
+                                ReaderHaptics.light()
+                                withAnimation(.easeInOut(duration: 0.18)) {
+                                    vm.isReaderChromeHidden.toggle()
+                                }
+                            } label: {
+                                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                    .font(.system(size: 12.5, weight: .medium))
+                                    .foregroundStyle(chromeFg)
+                                    .padding(iconPad)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Focus Reading")
+                            .help("Focus Reading (⌘. or f)")
+                        }
                     }
+                    .padding(.horizontal, isCompactWidth ? 8 : 10)
+                    .padding(.vertical, 6)
+                    .background(chromeBg)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(chromeBg)
-            }
 
             if let book = vm.activeBook {
                 GeometryReader { geo in
@@ -387,6 +466,7 @@ public struct ReaderPaneView: View {
                             inlineFindDirection: vm.inlineFindDirection,
                             epubCommandToken: vm.epubCommandToken,
                             epubPendingCommand: vm.epubPendingCommand,
+                            epubGoToSpreadTarget: vm.epubGoToSpreadTarget,
                             onNoteTap: { noteId in
                                 if let hit = vm.activeNotes.first(where: { $0.id == noteId }) {
                                     ReaderHaptics.selection()
@@ -402,6 +482,16 @@ public struct ReaderPaneView: View {
                                         pageIndex: nil
                                     )
                                 }
+                            },
+                            onPagination: { spread, totalSpreads, page, pageEnd, totalPages, colsPerView in
+                                vm.updateEPUBPagination(
+                                    spread: spread,
+                                    totalSpreads: totalSpreads,
+                                    page: page,
+                                    pageEnd: pageEnd,
+                                    totalPages: totalPages,
+                                    colsPerView: colsPerView
+                                )
                             },
                             onSelection: { text in
                                 vm.activeSelectionText = text
@@ -419,7 +509,7 @@ public struct ReaderPaneView: View {
                                     }
                                 case "prev":
                                     ReaderHaptics.selection()
-                                    Task { await vm.selectEPUBSpine(vm.activeEPUBSpineIndex - 1) }
+                                    Task { await vm.selectEPUBSpine(vm.activeEPUBSpineIndex - 1, startAtEnd: true) }
                                 case "next":
                                     ReaderHaptics.selection()
                                     Task { await vm.selectEPUBSpine(vm.activeEPUBSpineIndex + 1) }
@@ -472,16 +562,19 @@ public struct ReaderPaneView: View {
                                 autoCrop: vm.pdfAutoCropEnabled,
                                 twoColumnMode: vm.pdfTwoColumnMode,
                                 twoColumnStep: vm.pdfTwoColumnStep,
-                                twoUpMode: vm.pdfTwoUpMode,
+                                displayLayout: vm.pdfDisplayLayout,
                                 zoomScale: vm.pdfZoomScale,
                                 highlights: vm.activeHighlights,
                                 searchHighlightQuery: vm.isInlineFindPresented ? vm.inlineFindQuery : vm.activePDFSearchHighlight,
                                 inlineFindActionToken: vm.inlineFindActionToken,
                                 inlineFindDirection: vm.inlineFindDirection,
+                                pdfJumpToken: vm.pdfJumpToken,
+                                pdfJumpTargetPage: vm.pdfJumpTargetPage,
                                 pdfCommandToken: vm.pdfCommandToken,
                                 pdfPendingCommand: vm.pdfPendingCommand,
+                                hasPendingStamps: !vm.pendingPDFStamps.isEmpty,
                                 onPageChanged: { newPage in
-                                    Task { await vm.selectPDFPage(newPage) }
+                                    vm.notePDFPageScrolled(newPage)
                                 },
                                 onSelectionChanged: { text in
                                     vm.activeSelectionText = text
@@ -715,6 +808,57 @@ public struct ReaderPaneView: View {
                     .padding(.trailing, 14)
                     .padding(.bottom, 12)
                 }
+
+                #if os(macOS)
+                let isEPUBPaginated = vm.activeEPUB != nil && vm.typography.readingFlow == .paginated
+                let isPDFPaged = vm.activePDFURL != nil && (vm.pdfDisplayLayout == .page || vm.pdfDisplayLayout == .spread)
+                if isWideDesktop && (!vm.isReaderChromeHidden || isSnapshot) && (isEPUBPaginated || isPDFPaged) {
+                    HStack {
+                        Button {
+                            ReaderHaptics.selection()
+                            if isEPUBPaginated {
+                                vm.stepEPUBPage(delta: -1)
+                            } else {
+                                vm.pdfPendingCommand = "prevPage"
+                                vm.pdfCommandToken += 1
+                            }
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(chromeFg.opacity(0.75))
+                                .frame(width: 28, height: 48)
+                                .background(chromeBg.opacity(0.82), in: Capsule())
+                                .overlay(Capsule().stroke(ReaderPalette.hairline, lineWidth: 0.75))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Previous Page (←)")
+                        .padding(.leading, 10)
+
+                        Spacer()
+
+                        Button {
+                            ReaderHaptics.selection()
+                            if isEPUBPaginated {
+                                vm.stepEPUBPage(delta: 1)
+                            } else {
+                                vm.pdfPendingCommand = "nextPage"
+                                vm.pdfCommandToken += 1
+                            }
+                        } label: {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(chromeFg.opacity(0.75))
+                                .frame(width: 28, height: 48)
+                                .background(chromeBg.opacity(0.82), in: Capsule())
+                                .overlay(Capsule().stroke(ReaderPalette.hairline, lineWidth: 0.75))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Next Page (→ or Space)")
+                        .padding(.trailing, 10)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                }
+                #endif
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .topTrailing) {
@@ -732,10 +876,11 @@ public struct ReaderPaneView: View {
             }
 
             if let epub = vm.activeEPUB, (!vm.isReaderChromeHidden || isSnapshot) {
-                let displayIdx = vm.scrubChapterTarget ?? vm.activeEPUBSpineIndex
-                let total = max(1, epub.spineHrefs.count)
+                let chDisplayIdx = vm.scrubChapterTarget ?? vm.activeEPUBSpineIndex
+                let totalChapters = max(1, epub.spineHrefs.count)
                 let mins = vm.estimatedChapterMinutesRemaining()
                 let pct = vm.activeBook?.progressPercent ?? 0
+                let isPaginated = vm.typography.readingFlow == .paginated
 
                 Divider()
                 VStack(spacing: 4) {
@@ -745,66 +890,187 @@ public struct ReaderPaneView: View {
                             .foregroundStyle(chromeFg)
                             .lineLimit(1)
                     }
-                    if !isSnapshot && epub.spineHrefs.count > 1 {
-                        Slider(
-                            value: Binding(
-                                get: { Double(vm.scrubChapterTarget ?? vm.activeEPUBSpineIndex) },
-                                set: { vm.scrubChapterTarget = Int($0.rounded()) }
-                            ),
-                            in: 0...Double(max(1, epub.spineHrefs.count - 1)),
-                            step: 1,
-                            onEditingChanged: { editing in
-                                if !editing, let target = vm.scrubChapterTarget {
-                                    vm.scrubChapterTarget = nil
-                                    ReaderHaptics.selection()
-                                    Task { await vm.selectEPUBSpine(target) }
+                    if !isSnapshot {
+                        if isPaginated && vm.epubTotalSpreads > 1 {
+                            Slider(
+                                value: Binding(
+                                    get: { Double(vm.scrubEPUBSpreadTarget ?? vm.epubCurrentSpread) },
+                                    set: { vm.scrubEPUBSpreadTarget = Int($0.rounded()) }
+                                ),
+                                in: 1...Double(max(2, vm.epubTotalSpreads)),
+                                step: 1,
+                                onEditingChanged: { editing in
+                                    if !editing, let target = vm.scrubEPUBSpreadTarget {
+                                        vm.scrubEPUBSpreadTarget = nil
+                                        ReaderHaptics.selection()
+                                        vm.jumpToEPUBSpread(target)
+                                    }
                                 }
-                            }
-                        )
-                        .tint(ReaderPalette.accent)
-                        .controlSize(.mini)
+                            )
+                            .tint(ReaderPalette.accent)
+                            .controlSize(.mini)
+                        } else if epub.spineHrefs.count > 1 {
+                            Slider(
+                                value: Binding(
+                                    get: { Double(vm.scrubChapterTarget ?? vm.activeEPUBSpineIndex) },
+                                    set: { vm.scrubChapterTarget = Int($0.rounded()) }
+                                ),
+                                in: 0...Double(max(1, epub.spineHrefs.count - 1)),
+                                step: 1,
+                                onEditingChanged: { editing in
+                                    if !editing, let target = vm.scrubChapterTarget {
+                                        vm.scrubChapterTarget = nil
+                                        ReaderHaptics.selection()
+                                        Task { await vm.selectEPUBSpine(target) }
+                                    }
+                                }
+                            )
+                            .tint(ReaderPalette.accent)
+                            .controlSize(.mini)
+                        }
                     }
 
-                    HStack {
-                        Button {
-                            ReaderHaptics.selection()
-                            Task { await vm.selectEPUBSpine(vm.activeEPUBSpineIndex - 1) }
-                        } label: {
-                            Label("Prev", systemImage: "chevron.left")
+                    if isPaginated {
+                        let timeSuffix = (mins ?? 0) > 0 ? " · ~\(mins!) min" : ""
+                        let pageRangeStr: String = {
+                            if let scrubSpread = vm.scrubEPUBSpreadTarget {
+                                let p1 = (scrubSpread - 1) * vm.epubColumnsPerSpread + 1
+                                let p2 = min(vm.epubTotalPages, p1 + vm.epubColumnsPerSpread - 1)
+                                return p2 > p1 ? "Page \(p1)–\(p2) / \(vm.epubTotalPages)" : "Page \(p1) / \(vm.epubTotalPages)"
+                            }
+                            if isSnapshot {
+                                return "Page 1–2 / 6"
+                            }
+                            if vm.epubCurrentPageEnd > vm.epubCurrentPage {
+                                return "Page \(vm.epubCurrentPage)–\(vm.epubCurrentPageEnd) / \(vm.epubTotalPages)"
+                            }
+                            return "Page \(vm.epubCurrentPage) / \(vm.epubTotalPages)"
+                        }()
+                        let fullCenterLabel = "\(pageRangeStr) · Ch \(chDisplayIdx + 1)/\(totalChapters) · \(pct)%\(timeSuffix)"
+                        let compactCenterLabel = isSnapshot
+                            ? "Page 1 / 6 · Ch \(chDisplayIdx + 1)/\(totalChapters) · \(pct)%"
+                            : "Page \(vm.epubCurrentPage)/\(vm.epubTotalPages) · Ch \(chDisplayIdx + 1)/\(totalChapters) · \(pct)%"
+
+                        HStack(spacing: 8) {
+                            HStack(spacing: 8) {
+                                Button {
+                                    ReaderHaptics.selection()
+                                    Task { await vm.selectEPUBSpine(vm.activeEPUBSpineIndex - 1) }
+                                } label: {
+                                    Text("«")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(chromeFg.opacity(0.68))
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(vm.activeEPUBSpineIndex <= 0)
+                                .help("Previous Chapter (⌘[ or [)")
+
+                                Button {
+                                    ReaderHaptics.selection()
+                                    vm.stepEPUBPage(delta: -1)
+                                } label: {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "chevron.left")
+                                        Text("Page")
+                                    }
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(chromeFg)
+                                }
+                                .buttonStyle(.plain)
+                                .help("Previous Page (←)")
+                            }
+
+                            Spacer(minLength: 4)
+
+                            Button {
+                                vm.activeSheet = .toc
+                            } label: {
+                                ViewThatFits(in: .horizontal) {
+                                    Text(fullCenterLabel)
+                                        .lineLimit(1)
+                                    Text(compactCenterLabel)
+                                        .lineLimit(1)
+                                }
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .foregroundStyle(chromeFg.opacity(0.72))
+                                .monospacedDigit()
+                            }
+                            .buttonStyle(.plain)
+
+                            Spacer(minLength: 4)
+
+                            HStack(spacing: 8) {
+                                Button {
+                                    ReaderHaptics.selection()
+                                    vm.stepEPUBPage(delta: 1)
+                                } label: {
+                                    HStack(spacing: 3) {
+                                        Text("Page")
+                                        Image(systemName: "chevron.right")
+                                    }
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(chromeFg)
+                                }
+                                .buttonStyle(.plain)
+                                .help("Next Page (→ or Space)")
+
+                                Button {
+                                    ReaderHaptics.selection()
+                                    Task { await vm.selectEPUBSpine(vm.activeEPUBSpineIndex + 1) }
+                                } label: {
+                                    Text("»")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(chromeFg.opacity(0.68))
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(vm.activeEPUBSpineIndex + 1 >= epub.spineHrefs.count)
+                                .help("Next Chapter (⌘] or ])")
+                            }
+                        }
+                    } else {
+                        HStack {
+                            Button {
+                                ReaderHaptics.selection()
+                                Task { await vm.selectEPUBSpine(vm.activeEPUBSpineIndex - 1) }
+                            } label: {
+                                Label("« Ch", systemImage: "chevron.left")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(chromeFg)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(vm.activeEPUBSpineIndex <= 0)
+                            .help("Previous Chapter (⌘[ or [)")
+
+                            Spacer()
+
+                            Button {
+                                vm.activeSheet = .toc
+                            } label: {
+                                let timeSuffix = (mins ?? 0) > 0 ? " · ~\(mins!) min" : ""
+                                Text("Scroll · Ch \(chDisplayIdx + 1)/\(totalChapters) · \(pct)%\(timeSuffix)")
+                                    .font(.system(size: 11.5, design: .monospaced))
+                                    .foregroundStyle(chromeFg.opacity(0.72))
+                                    .monospacedDigit()
+                            }
+                            .buttonStyle(.plain)
+
+                            Spacer()
+
+                            Button {
+                                ReaderHaptics.selection()
+                                Task { await vm.selectEPUBSpine(vm.activeEPUBSpineIndex + 1) }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text("Ch »")
+                                    Image(systemName: "chevron.right")
+                                }
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(chromeFg)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(vm.activeEPUBSpineIndex <= 0)
-
-                        Spacer()
-
-                        Button {
-                            vm.activeSheet = .toc
-                        } label: {
-                            let timeSuffix = (mins ?? 0) > 0 ? " · ~\(mins!) min" : ""
-                            Text("Ch \(displayIdx + 1)/\(total) · \(pct)%\(timeSuffix)")
-                                .font(.system(size: 11.5, design: .monospaced))
-                                .foregroundStyle(chromeFg.opacity(0.68))
-                                .monospacedDigit()
-                        }
-                        .buttonStyle(.plain)
-
-                        Spacer()
-
-                        Button {
-                            ReaderHaptics.selection()
-                            Task { await vm.selectEPUBSpine(vm.activeEPUBSpineIndex + 1) }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Text("Next")
-                                Image(systemName: "chevron.right")
                             }
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(chromeFg)
+                            .buttonStyle(.plain)
+                            .disabled(vm.activeEPUBSpineIndex + 1 >= epub.spineHrefs.count)
+                            .help("Next Chapter (⌘] or ])")
                         }
-                        .buttonStyle(.plain)
-                        .disabled(vm.activeEPUBSpineIndex + 1 >= epub.spineHrefs.count)
                     }
                 }
                 .padding(.horizontal, 14)
@@ -860,9 +1126,9 @@ public struct ReaderPaneView: View {
                             vm.activeSheet = .toc
                         } label: {
                             let colBadge = (vm.pdfTwoColumnMode && vm.pdfDetectedColumnCount >= 2) ? " · Col \(vm.pdfTwoColumnStep + 1)/2" : ""
-                            Text("Page \(displayIdx + 1)/\(total)\(colBadge) · \(vm.activeBook?.progressPercent ?? 0)%")
+                            Text("\(vm.pdfDisplayLayout.rawValue) · Page \(displayIdx + 1)/\(total)\(colBadge) · \(vm.activeBook?.progressPercent ?? 0)%")
                                 .font(.system(size: 11.5, design: .monospaced))
-                                .foregroundStyle(chromeFg.opacity(0.68))
+                                .foregroundStyle(chromeFg.opacity(0.72))
                                 .monospacedDigit()
                         }
                         .buttonStyle(.plain)
@@ -893,6 +1159,7 @@ public struct ReaderPaneView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
                 .background(chromeBg)
+            }
             }
         }
         #if os(iOS)
@@ -994,66 +1261,177 @@ private struct SnapshotEPUBReaderBody: View {
         let padX = CGFloat(vm.typography.marginWidth.horizontalPaddingPx)
         let extraLineSpacing = max(2, CGFloat(vm.typography.fontSize) * (CGFloat(vm.typography.lineHeight) - 1.25))
 
-        ReaderScrollContainer {
-            VStack(alignment: .leading, spacing: 14) {
-                ForEach(Array(paragraphs.enumerated()), id: \.offset) { idx, para in
-                    if idx == 0 {
-                        Text(para)
-                            .font(.system(size: vm.typography.fontSize + 5, weight: .semibold, design: .serif))
-                            .foregroundStyle(fg)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else {
-                        highlightedParagraph(para, notes: notes, fg: fg)
-                            .lineSpacing(extraLineSpacing)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
+        if vm.typography.readingFlow == .paginated {
+            GeometryReader { geo in
+                let isSpread = geo.size.width >= 760
+                let isFramed = geo.size.width >= 520
+                let deskBg: Color = activeTheme == .ink
+                    ? Color(red: 0.043, green: 0.039, blue: 0.035)
+                    : (activeTheme == .sepia ? Color(red: 0.894, green: 0.839, blue: 0.737) : ReaderPalette.deskCanvas)
 
-                if !notes.isEmpty {
-                    Rectangle()
-                        .fill(fg.opacity(0.14))
-                        .frame(height: 1)
-                        .padding(.top, 6)
-                    Text("Margin notes (\(notes.count))")
-                        .font(.system(size: 12.5, weight: .semibold, design: .serif))
-                        .foregroundStyle(muted)
-                    ForEach(notes) { note in
-                        Button {
-                            vm.activeSheet = .marginNote(note)
-                        } label: {
-                            HStack(alignment: .top, spacing: 8) {
-                                Text(note.kind.capitalized)
-                                    .font(.system(size: 10.5, weight: .semibold))
-                                    .foregroundStyle(ReaderPalette.accent)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(ReaderPalette.accent.opacity(0.14), in: Capsule())
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(note.label)
-                                        .font(.system(size: 12.5, weight: .semibold))
-                                        .foregroundStyle(fg)
-                                    Text(note.note)
-                                        .font(.system(size: 11.5))
-                                        .foregroundStyle(muted)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                        .multilineTextAlignment(.leading)
+                ZStack {
+                    if isFramed {
+                        deskBg
+                    } else {
+                        bg
+                    }
+
+                    if isSpread {
+                        let bookW = min(960, max(540, geo.size.width - 96))
+                        let bookH = max(240, geo.size.height - 28)
+                        let splitIdx = max(2, min(paragraphs.count, (paragraphs.count + 1) / 2))
+                        let leftSlice = Array(paragraphs.prefix(splitIdx))
+                        let rightSlice = splitIdx < paragraphs.count ? Array(paragraphs.dropFirst(splitIdx)) : []
+
+                        HStack(alignment: .top, spacing: 48) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                ForEach(Array(leftSlice.enumerated()), id: \.offset) { idx, para in
+                                    if idx == 0 {
+                                        Text(para)
+                                            .font(.system(size: vm.typography.fontSize + 4, weight: .semibold, design: .serif))
+                                            .foregroundStyle(fg)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    } else {
+                                        highlightedParagraph(para, notes: notes, fg: fg)
+                                            .lineSpacing(extraLineSpacing)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
                                 }
                                 Spacer(minLength: 0)
                             }
-                            .padding(9)
-                            .background(surface, in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(fg.opacity(0.10), lineWidth: 0.75))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+                            VStack(alignment: .leading, spacing: 12) {
+                                ForEach(Array(rightSlice.enumerated()), id: \.offset) { _, para in
+                                    highlightedParagraph(para, notes: notes, fg: fg)
+                                        .lineSpacing(extraLineSpacing)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                if !notes.isEmpty {
+                                    marginNotesSection(notes: notes, fg: fg, muted: muted, surface: surface)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         }
-                        .buttonStyle(.plain)
+                        .padding(.horizontal, 28)
+                        .padding(.vertical, 26)
+                        .frame(width: bookW, height: bookH, alignment: .topLeading)
+                        .background(bg)
+                        .overlay {
+                            LinearGradient(
+                                colors: [Color.clear, Color.black.opacity(0.05), Color.black.opacity(0.11), Color.black.opacity(0.03), Color.clear],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                            .frame(width: 26)
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(ReaderPalette.hairline, lineWidth: 1))
+                        .shadow(color: Color.black.opacity(activeTheme == .ink ? 0.38 : 0.12), radius: 14, y: 5)
+                    } else {
+                        let pageW = isFramed ? min(640, geo.size.width - 80) : geo.size.width
+                        let pageH = isFramed ? max(240, geo.size.height - 28) : geo.size.height
+                        VStack(alignment: .leading, spacing: 13) {
+                            ForEach(Array(paragraphs.enumerated()), id: \.offset) { idx, para in
+                                if idx == 0 {
+                                    Text(para)
+                                        .font(.system(size: vm.typography.fontSize + 4, weight: .semibold, design: .serif))
+                                        .foregroundStyle(fg)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                } else {
+                                    highlightedParagraph(para, notes: notes, fg: fg)
+                                        .lineSpacing(extraLineSpacing)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            if !notes.isEmpty {
+                                marginNotesSection(notes: notes, fg: fg, muted: muted, surface: surface)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, isFramed ? 28 : padX)
+                        .padding(.vertical, 22)
+                        .frame(width: pageW, height: pageH, alignment: .topLeading)
+                        .background(bg)
+                        .clipShape(RoundedRectangle(cornerRadius: isFramed ? 8 : 0))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: isFramed ? 8 : 0)
+                                .stroke(isFramed ? ReaderPalette.hairline : Color.clear, lineWidth: 1)
+                        )
+                        .shadow(color: isFramed ? Color.black.opacity(0.10) : .clear, radius: 10, y: 4)
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
             }
-            .padding(.horizontal, padX)
-            .padding(.vertical, 22)
-            .frame(maxWidth: 660, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .center)
+        } else {
+            ReaderScrollContainer {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(Array(paragraphs.enumerated()), id: \.offset) { idx, para in
+                        if idx == 0 {
+                            Text(para)
+                                .font(.system(size: vm.typography.fontSize + 5, weight: .semibold, design: .serif))
+                                .foregroundStyle(fg)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            highlightedParagraph(para, notes: notes, fg: fg)
+                                .lineSpacing(extraLineSpacing)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    if !notes.isEmpty {
+                        marginNotesSection(notes: notes, fg: fg, muted: muted, surface: surface)
+                    }
+                }
+                .padding(.horizontal, padX)
+                .padding(.vertical, 22)
+                .frame(maxWidth: 660, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .background(bg)
         }
-        .background(bg)
+    }
+
+    @ViewBuilder
+    private func marginNotesSection(notes: [MarginNote], fg: Color, muted: Color, surface: Color) -> some View {
+        Rectangle()
+            .fill(fg.opacity(0.14))
+            .frame(height: 1)
+            .padding(.top, 6)
+        Text("Margin notes (\(notes.count))")
+            .font(.system(size: 12.5, weight: .semibold, design: .serif))
+            .foregroundStyle(muted)
+        ForEach(notes) { note in
+            Button {
+                vm.activeSheet = .marginNote(note)
+            } label: {
+                HStack(alignment: .top, spacing: 8) {
+                    Text(note.kind.capitalized)
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(ReaderPalette.accent)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(ReaderPalette.accent.opacity(0.14), in: Capsule())
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(note.label)
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(fg)
+                        Text(note.note)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(9)
+                .background(surface, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(fg.opacity(0.10), lineWidth: 0.75))
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private func highlightedParagraph(_ text: String, notes: [MarginNote], fg: Color) -> Text {
@@ -1374,8 +1752,10 @@ private struct EPUBWebView: UIViewRepresentable {
     let inlineFindDirection: Int
     let epubCommandToken: Int
     let epubPendingCommand: String?
+    let epubGoToSpreadTarget: Int
     let onNoteTap: (String) -> Void
     let onProgress: (Double, Int) -> Void
+    let onPagination: (Int, Int, Int, Int, Int, Int) -> Void
     let onSelection: (String) -> Void
     let onSelectSpine: (Int) -> Void
     let onZoneTap: (String) -> Void
@@ -1389,6 +1769,7 @@ private struct EPUBWebView: UIViewRepresentable {
             currentChapterHref: currentChapterHref,
             onNoteTap: onNoteTap,
             onProgress: onProgress,
+            onPagination: onPagination,
             onSelection: onSelection,
             onSelectSpine: onSelectSpine,
             onZoneTap: onZoneTap,
@@ -1425,8 +1806,10 @@ private struct EPUBWebView: UIViewRepresentable {
             inlineFindDirection: inlineFindDirection,
             epubCommandToken: epubCommandToken,
             epubPendingCommand: epubPendingCommand,
+            epubGoToSpreadTarget: epubGoToSpreadTarget,
             onNoteTap: onNoteTap,
             onProgress: onProgress,
+            onPagination: onPagination,
             onSelection: onSelection,
             onSelectSpine: onSelectSpine,
             onZoneTap: onZoneTap,
@@ -1445,14 +1828,17 @@ private struct PDFKitReaderView: UIViewRepresentable {
     let autoCrop: Bool
     let twoColumnMode: Bool
     let twoColumnStep: Int
-    let twoUpMode: Bool
+    let displayLayout: PDFDisplayLayout
     let zoomScale: Double
     let highlights: [ReadingHighlight]
     let searchHighlightQuery: String?
     let inlineFindActionToken: Int
     let inlineFindDirection: Int
+    let pdfJumpToken: Int
+    let pdfJumpTargetPage: Int
     let pdfCommandToken: Int
     let pdfPendingCommand: String?
+    let hasPendingStamps: Bool
     let onPageChanged: (Int) -> Void
     let onSelectionChanged: (String) -> Void
     let onColumnsDetected: (Int) -> Void
@@ -1474,7 +1860,10 @@ private struct PDFKitReaderView: UIViewRepresentable {
     func makeUIView(context: Context) -> PDFView {
         let view = PDFView()
         view.autoScales = true
-        view.displayMode = (twoUpMode && !twoColumnMode) ? .twoUpContinuous : .singlePageContinuous
+        view.displayMode = PDFViewCoordinator.pdfDisplayMode(for: displayLayout, twoColumnMode: twoColumnMode)
+        if displayLayout == .page && !twoColumnMode {
+            view.displayDirection = .horizontal
+        }
         view.backgroundColor = pdfPaper == .night ? UIColor(red: 0.955, green: 0.959, blue: 0.963, alpha: 1.0) : UIColor(ReaderPalette.deskCanvas)
         view.document = PDFDocument(url: url)
         view.delegate = context.coordinator
@@ -1501,14 +1890,17 @@ private struct PDFKitReaderView: UIViewRepresentable {
             autoCrop: autoCrop,
             twoColumnMode: twoColumnMode,
             twoColumnStep: twoColumnStep,
-            twoUpMode: twoUpMode,
+            displayLayout: displayLayout,
             zoomScale: zoomScale,
             highlights: highlights,
             searchQuery: searchHighlightQuery,
             inlineFindActionToken: inlineFindActionToken,
             inlineFindDirection: inlineFindDirection,
+            pdfJumpToken: pdfJumpToken,
+            pdfJumpTargetPage: pdfJumpTargetPage,
             pdfCommandToken: pdfCommandToken,
-            pdfPendingCommand: pdfPendingCommand
+            pdfPendingCommand: pdfPendingCommand,
+            hasPendingStamps: hasPendingStamps
         )
     }
 }
@@ -1526,8 +1918,10 @@ private struct EPUBWebView: NSViewRepresentable {
     let inlineFindDirection: Int
     let epubCommandToken: Int
     let epubPendingCommand: String?
+    let epubGoToSpreadTarget: Int
     let onNoteTap: (String) -> Void
     let onProgress: (Double, Int) -> Void
+    let onPagination: (Int, Int, Int, Int, Int, Int) -> Void
     let onSelection: (String) -> Void
     let onSelectSpine: (Int) -> Void
     let onZoneTap: (String) -> Void
@@ -1541,6 +1935,7 @@ private struct EPUBWebView: NSViewRepresentable {
             currentChapterHref: currentChapterHref,
             onNoteTap: onNoteTap,
             onProgress: onProgress,
+            onPagination: onPagination,
             onSelection: onSelection,
             onSelectSpine: onSelectSpine,
             onZoneTap: onZoneTap,
@@ -1574,8 +1969,10 @@ private struct EPUBWebView: NSViewRepresentable {
             inlineFindDirection: inlineFindDirection,
             epubCommandToken: epubCommandToken,
             epubPendingCommand: epubPendingCommand,
+            epubGoToSpreadTarget: epubGoToSpreadTarget,
             onNoteTap: onNoteTap,
             onProgress: onProgress,
+            onPagination: onPagination,
             onSelection: onSelection,
             onSelectSpine: onSelectSpine,
             onZoneTap: onZoneTap,
@@ -1594,14 +1991,17 @@ private struct PDFKitReaderView: NSViewRepresentable {
     let autoCrop: Bool
     let twoColumnMode: Bool
     let twoColumnStep: Int
-    let twoUpMode: Bool
+    let displayLayout: PDFDisplayLayout
     let zoomScale: Double
     let highlights: [ReadingHighlight]
     let searchHighlightQuery: String?
     let inlineFindActionToken: Int
     let inlineFindDirection: Int
+    let pdfJumpToken: Int
+    let pdfJumpTargetPage: Int
     let pdfCommandToken: Int
     let pdfPendingCommand: String?
+    let hasPendingStamps: Bool
     let onPageChanged: (Int) -> Void
     let onSelectionChanged: (String) -> Void
     let onColumnsDetected: (Int) -> Void
@@ -1624,7 +2024,7 @@ private struct PDFKitReaderView: NSViewRepresentable {
         let view = PDFView()
         view.autoScales = true
         view.pageShadowsEnabled = true
-        view.displayMode = (twoUpMode && !twoColumnMode) ? .twoUpContinuous : .singlePageContinuous
+        view.displayMode = PDFViewCoordinator.pdfDisplayMode(for: displayLayout, twoColumnMode: twoColumnMode)
         view.backgroundColor = pdfPaper == .night ? NSColor(srgbRed: 0.955, green: 0.959, blue: 0.963, alpha: 1.0) : NSColor(ReaderPalette.deskCanvas)
         view.document = PDFDocument(url: url)
         view.delegate = context.coordinator
@@ -1646,14 +2046,17 @@ private struct PDFKitReaderView: NSViewRepresentable {
             autoCrop: autoCrop,
             twoColumnMode: twoColumnMode,
             twoColumnStep: twoColumnStep,
-            twoUpMode: twoUpMode,
+            displayLayout: displayLayout,
             zoomScale: zoomScale,
             highlights: highlights,
             searchQuery: searchHighlightQuery,
             inlineFindActionToken: inlineFindActionToken,
             inlineFindDirection: inlineFindDirection,
+            pdfJumpToken: pdfJumpToken,
+            pdfJumpTargetPage: pdfJumpTargetPage,
             pdfCommandToken: pdfCommandToken,
-            pdfPendingCommand: pdfPendingCommand
+            pdfPendingCommand: pdfPendingCommand,
+            hasPendingStamps: hasPendingStamps
         )
     }
 }
@@ -1670,6 +2073,7 @@ private final class EPUBWebCoordinator: NSObject, WKURLSchemeHandler, WKScriptMe
     var lastCommandToken: Int = 0
     var onNoteTap: (String) -> Void
     var onProgress: (Double, Int) -> Void
+    var onPagination: (Int, Int, Int, Int, Int, Int) -> Void
     var onSelection: (String) -> Void
     var onSelectSpine: (Int) -> Void
     var onZoneTap: (String) -> Void
@@ -1682,6 +2086,7 @@ private final class EPUBWebCoordinator: NSObject, WKURLSchemeHandler, WKScriptMe
         currentChapterHref: String,
         onNoteTap: @escaping (String) -> Void,
         onProgress: @escaping (Double, Int) -> Void,
+        onPagination: @escaping (Int, Int, Int, Int, Int, Int) -> Void,
         onSelection: @escaping (String) -> Void,
         onSelectSpine: @escaping (Int) -> Void,
         onZoneTap: @escaping (String) -> Void,
@@ -1693,6 +2098,7 @@ private final class EPUBWebCoordinator: NSObject, WKURLSchemeHandler, WKScriptMe
         self.currentChapterHref = currentChapterHref
         self.onNoteTap = onNoteTap
         self.onProgress = onProgress
+        self.onPagination = onPagination
         self.onSelection = onSelection
         self.onSelectSpine = onSelectSpine
         self.onZoneTap = onZoneTap
@@ -1715,8 +2121,10 @@ private final class EPUBWebCoordinator: NSObject, WKURLSchemeHandler, WKScriptMe
         inlineFindDirection: Int,
         epubCommandToken: Int,
         epubPendingCommand: String?,
+        epubGoToSpreadTarget: Int,
         onNoteTap: @escaping (String) -> Void,
         onProgress: @escaping (Double, Int) -> Void,
+        onPagination: @escaping (Int, Int, Int, Int, Int, Int) -> Void,
         onSelection: @escaping (String) -> Void,
         onSelectSpine: @escaping (Int) -> Void,
         onZoneTap: @escaping (String) -> Void,
@@ -1728,6 +2136,7 @@ private final class EPUBWebCoordinator: NSObject, WKURLSchemeHandler, WKScriptMe
         self.currentChapterHref = currentChapterHref
         self.onNoteTap = onNoteTap
         self.onProgress = onProgress
+        self.onPagination = onPagination
         self.onSelection = onSelection
         self.onSelectSpine = onSelectSpine
         self.onZoneTap = onZoneTap
@@ -1785,9 +2194,11 @@ private final class EPUBWebCoordinator: NSObject, WKURLSchemeHandler, WKScriptMe
             case "scrollUp":
                 web.evaluateJavaScript("window.__cohortScrollBy && window.__cohortScrollBy(-140);", completionHandler: nil)
             case "pageNext":
-                web.evaluateJavaScript("window.__cohortScrollBy && window.__cohortScrollBy(Math.max(240, window.innerHeight * 0.85));", completionHandler: nil)
+                web.evaluateJavaScript("window.__cohortStepPage && window.__cohortStepPage(1);", completionHandler: nil)
             case "pagePrev":
-                web.evaluateJavaScript("window.__cohortScrollBy && window.__cohortScrollBy(-Math.max(240, window.innerHeight * 0.85));", completionHandler: nil)
+                web.evaluateJavaScript("window.__cohortStepPage && window.__cohortStepPage(-1);", completionHandler: nil)
+            case "goToSpread":
+                web.evaluateJavaScript("window.__cohortGoToSpread && window.__cohortGoToSpread(\(epubGoToSpreadTarget));", completionHandler: nil)
             case "halfPageDown":
                 web.evaluateJavaScript("window.__cohortScrollBy && window.__cohortScrollBy(Math.max(180, window.innerHeight * 0.45));", completionHandler: nil)
             case "halfPageUp":
@@ -1904,6 +2315,14 @@ private final class EPUBWebCoordinator: NSObject, WKURLSchemeHandler, WKScriptMe
             let frac = body["fraction"] as? Double ?? 0
             let word = body["wordOffset"] as? Int ?? 0
             onProgress(frac, word)
+        case "pagination":
+            let spread = body["spread"] as? Int ?? 1
+            let totalSpreads = body["totalSpreads"] as? Int ?? 1
+            let page = body["page"] as? Int ?? 1
+            let pageEnd = body["pageEnd"] as? Int ?? page
+            let totalPages = body["totalPages"] as? Int ?? 1
+            let colsPerView = body["colsPerView"] as? Int ?? 1
+            onPagination(spread, totalSpreads, page, pageEnd, totalPages, colsPerView)
         case "selection":
             if let text = body["text"] as? String { onSelection(text) }
         case "zoneTap":
@@ -1944,7 +2363,29 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
     private var lastReportedSelection: String = ""
     private var lastZoomScale: Double = 1.0
     private var lastColumnKey: String = ""
-    private var lastSyncedPageIndex: Int = -1
+    private var lastDisplayLayout: PDFDisplayLayout?
+    private var lastHandledJumpToken: Int = -1
+    private var hasPendingStamps: Bool = false
+    private var lastColumnDetectPage: Int = -1
+    private var columnDetectTask: Task<Void, Never>?
+
+    static func pdfDisplayMode(for layout: PDFDisplayLayout, twoColumnMode: Bool) -> PDFDisplayMode {
+        if twoColumnMode {
+            return .singlePageContinuous
+        }
+        switch layout {
+        case .scroll:
+            return .singlePageContinuous
+        case .page:
+            return .singlePage
+        case .spread:
+            #if os(macOS)
+            return .twoUp
+            #else
+            return .singlePage
+            #endif
+        }
+    }
 
     init(
         onPageChanged: @escaping (Int) -> Void,
@@ -1971,12 +2412,21 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
                     guard let self, let pdfView, let doc = pdfView.document, let page = pdfView.currentPage else { return }
                     let idx = doc.index(for: page)
                     if idx != NSNotFound {
-                        self.lastSyncedPageIndex = idx
                         self.onPageChanged(idx)
+                        if self.hasPendingStamps {
+                            self.emitPageFrame(for: pdfView)
+                        }
+                        if self.lastColumnDetectPage != idx {
+                            self.lastColumnDetectPage = idx
+                            self.columnDetectTask?.cancel()
+                            self.columnDetectTask = Task { @MainActor [weak self, weak pdfView] in
+                                try? await Task.sleep(for: .milliseconds(350))
+                                guard !Task.isCancelled, let self, let pdfView, let cur = pdfView.currentPage else { return }
+                                let cols = PDFColumnDetector.detectColumns(on: cur)
+                                self.onColumnsDetected(cols.count)
+                            }
+                        }
                     }
-                    let cols = PDFColumnDetector.detectColumns(on: page)
-                    self.onColumnsDetected(cols.count)
-                    self.emitPageFrame(for: pdfView)
                 }
             }
         )
@@ -1984,7 +2434,9 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
             nc.addObserver(forName: Notification.Name.PDFViewScaleChanged, object: pdfView, queue: .main) { [weak self, weak pdfView] _ in
                 Task { @MainActor in
                     guard let self, let pdfView else { return }
-                    self.emitPageFrame(for: pdfView)
+                    if self.hasPendingStamps {
+                        self.emitPageFrame(for: pdfView)
+                    }
                 }
             }
         )
@@ -2009,19 +2461,20 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
         autoCrop: Bool,
         twoColumnMode: Bool,
         twoColumnStep: Int,
-        twoUpMode: Bool,
+        displayLayout: PDFDisplayLayout,
         zoomScale: Double,
         highlights: [ReadingHighlight],
         searchQuery: String?,
         inlineFindActionToken: Int,
         inlineFindDirection: Int,
+        pdfJumpToken: Int,
+        pdfJumpTargetPage: Int,
         pdfCommandToken: Int,
-        pdfPendingCommand: String?
+        pdfPendingCommand: String?,
+        hasPendingStamps: Bool
     ) {
-        let desiredDisplayMode: PDFDisplayMode = (twoUpMode && !twoColumnMode) ? .twoUpContinuous : .singlePageContinuous
-        if view.displayMode != desiredDisplayMode {
-            view.displayMode = desiredDisplayMode
-        }
+        self.hasPendingStamps = hasPendingStamps
+        let desiredDisplayMode = Self.pdfDisplayMode(for: displayLayout, twoColumnMode: twoColumnMode)
         if currentURL != url || view.document == nil {
             currentURL = url
             cachedCropURL = nil
@@ -2033,8 +2486,25 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
             cachedFindIndex = 0
             lastZoomScale = 1.0
             lastColumnKey = ""
-            lastSyncedPageIndex = -1
+            lastDisplayLayout = nil
+            lastHandledJumpToken = -1
+            lastColumnDetectPage = -1
+            columnDetectTask?.cancel()
             view.document = PDFDocument(url: url)
+        }
+
+        if lastDisplayLayout != displayLayout || view.displayMode != desiredDisplayMode {
+            let preservedPage = view.currentPage
+            lastDisplayLayout = displayLayout
+            view.displayMode = desiredDisplayMode
+            #if canImport(UIKit)
+            view.displayDirection = (displayLayout == .page && !twoColumnMode) ? .horizontal : .vertical
+            #endif
+            view.autoScales = true
+            view.layoutDocumentView()
+            if let preservedPage {
+                view.go(to: preservedPage)
+            }
         }
 
         guard let doc = view.document else { return }
@@ -2090,11 +2560,11 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
             }
         }
 
-        if lastSyncedPageIndex != pageIndex,
-           pageIndex >= 0, pageIndex < doc.pageCount,
-           let target = doc.page(at: pageIndex) {
-            lastSyncedPageIndex = pageIndex
-            if view.currentPage != target {
+        if lastHandledJumpToken != pdfJumpToken {
+            lastHandledJumpToken = pdfJumpToken
+            if pdfJumpTargetPage >= 0, pdfJumpTargetPage < doc.pageCount,
+               let target = doc.page(at: pdfJumpTargetPage),
+               view.currentPage != target {
                 view.go(to: target)
             }
         }
@@ -2106,31 +2576,47 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
                 if let first = doc.page(at: 0) { view.go(to: first) }
             case "jumpBottom":
                 if doc.pageCount > 0, let last = doc.page(at: doc.pageCount - 1) { view.go(to: last) }
+            case "nextPage":
+                view.goToNextPage(nil)
+            case "prevPage":
+                view.goToPreviousPage(nil)
             case "scrollDown", "scrollUp", "halfPageDown", "halfPageUp", "pageDown", "pageUp":
                 let isUp = (cmd == "scrollUp" || cmd == "halfPageUp" || cmd == "pageUp")
                 let isPage = (cmd == "pageDown" || cmd == "pageUp")
                 let isHalf = (cmd == "halfPageDown" || cmd == "halfPageUp")
                 #if canImport(AppKit)
                 if let sv = view.documentView?.enclosingScrollView, let docView = view.documentView {
-                    let step: CGFloat
-                    if isPage {
-                        step = max(240, sv.contentView.bounds.height * 0.85)
-                    } else if isHalf {
-                        step = max(180, sv.contentView.bounds.height * 0.45)
+                    let maxY = max(0, docView.bounds.height - sv.contentView.bounds.height)
+                    if maxY <= 4 {
+                        if isUp { view.goToPreviousPage(nil) } else { view.goToNextPage(nil) }
                     } else {
-                        step = 140
+                        let step: CGFloat
+                        if isPage {
+                            step = max(240, sv.contentView.bounds.height * 0.85)
+                        } else if isHalf {
+                            step = max(180, sv.contentView.bounds.height * 0.45)
+                        } else {
+                            step = 140
+                        }
+                        let signedDelta = isUp ? -step : step
+                        let curPt = sv.contentView.bounds.origin
+                        var pt = curPt
+                        if docView.isFlipped {
+                            pt.y = min(max(0, curPt.y + signedDelta), maxY)
+                        } else {
+                            pt.y = min(max(0, curPt.y - signedDelta), maxY)
+                        }
+                        if abs(pt.y - curPt.y) < 2 && (displayLayout == .page || displayLayout == .spread) {
+                            if isUp { view.goToPreviousPage(nil) } else { view.goToNextPage(nil) }
+                        } else {
+                            NSAnimationContext.runAnimationGroup { ctx in
+                                ctx.duration = 0.14
+                                ctx.allowsImplicitAnimation = true
+                                sv.contentView.animator().setBoundsOrigin(pt)
+                            }
+                            sv.reflectScrolledClipView(sv.contentView)
+                        }
                     }
-                    let signedDelta = isUp ? -step : step
-                    var pt = sv.contentView.bounds.origin
-                    if docView.isFlipped {
-                        let maxY = max(0, docView.bounds.height - sv.contentView.bounds.height)
-                        pt.y = min(max(0, pt.y + signedDelta), maxY)
-                    } else {
-                        let maxY = max(0, docView.bounds.height - sv.contentView.bounds.height)
-                        pt.y = min(max(0, pt.y - signedDelta), maxY)
-                    }
-                    sv.contentView.scroll(to: pt)
-                    sv.reflectScrolledClipView(sv.contentView)
                 } else if isUp {
                     view.goToPreviousPage(nil)
                 } else {
@@ -2145,20 +2631,26 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
         }
 
         if let currentPage = view.currentPage {
-            let cols = PDFColumnDetector.detectColumns(on: currentPage)
-            onColumnsDetected(cols.count)
-
-            let colKey = "\(twoColumnMode):\(twoColumnStep):\(pageIndex):\(cols.count)"
-            if twoColumnMode && cols.count >= 2 {
-                if lastColumnKey != colKey {
-                    lastColumnKey = colKey
-                    let colRect = cols[min(max(0, twoColumnStep), cols.count - 1)]
-                    view.autoScales = false
-                    let targetScale = max(view.minScaleFactor, min(view.maxScaleFactor, (view.bounds.width * 0.92) / max(120, colRect.width)))
-                    if targetScale.isFinite && targetScale > 0 {
-                        view.scaleFactor = targetScale
+            if twoColumnMode {
+                let cols = PDFColumnDetector.detectColumns(on: currentPage)
+                onColumnsDetected(cols.count)
+                let colKey = "\(twoColumnMode):\(twoColumnStep):\(pageIndex):\(cols.count)"
+                if cols.count >= 2 {
+                    if lastColumnKey != colKey {
+                        lastColumnKey = colKey
+                        let colRect = cols[min(max(0, twoColumnStep), cols.count - 1)]
+                        view.autoScales = false
+                        let targetScale = max(view.minScaleFactor, min(view.maxScaleFactor, (view.bounds.width * 0.92) / max(120, colRect.width)))
+                        if targetScale.isFinite && targetScale > 0 {
+                            view.scaleFactor = targetScale
+                        }
+                        view.go(to: CGRect(x: colRect.minX, y: max(colRect.minY, colRect.maxY - 24), width: colRect.width, height: 24), on: currentPage)
                     }
-                    view.go(to: CGRect(x: colRect.minX, y: max(colRect.minY, colRect.maxY - 24), width: colRect.width, height: 24), on: currentPage)
+                } else {
+                    if !lastColumnKey.isEmpty {
+                        lastColumnKey = ""
+                        view.autoScales = true
+                    }
                 }
             } else {
                 if !lastColumnKey.isEmpty {
@@ -2178,7 +2670,9 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
             }
         }
 
-        emitPageFrame(for: view)
+        if hasPendingStamps {
+            emitPageFrame(for: view)
+        }
     }
 
     private func applyInMemoryHighlights(_ highlights: [ReadingHighlight], to doc: PDFDocument) {

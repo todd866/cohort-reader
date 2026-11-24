@@ -176,6 +176,14 @@ public final class ReaderViewModel {
     public var activeBook: BookItem?
     public var activeEPUB: EPUBDocument?
     public var activeEPUBSpineIndex: Int = 0
+    public var epubCurrentPage: Int = 1
+    public var epubCurrentPageEnd: Int = 1
+    public var epubTotalPages: Int = 1
+    public var epubCurrentSpread: Int = 1
+    public var epubTotalSpreads: Int = 1
+    public var epubColumnsPerSpread: Int = 1
+    public var scrubEPUBSpreadTarget: Int?
+    public var epubGoToSpreadTarget: Int = 1
     public var activePDFURL: URL?
     public var activePDFMetadata: PDFMetadataSummary?
     public var activePDFPageIndex: Int = 0
@@ -223,6 +231,9 @@ public final class ReaderViewModel {
     public var localLibraryMirrorPath: String = ""
     public var signatureStoreURL: URL?
     public var pdfTwoUpMode: Bool = false
+    public var pdfDisplayLayout: PDFDisplayLayout = .scroll
+    public var pdfJumpToken: Int = 0
+    public var pdfJumpTargetPage: Int = 0
     public var deletedSignatureIds: Set<String> = []
     public var lastSyncAt: Date?
     public var isSendingToInbox: Bool = false
@@ -272,6 +283,7 @@ public final class ReaderViewModel {
     private var autoDownloadTask: Task<Void, Never>?
     private var openBookTask: Task<Void, Never>?
     private var pdfSearchTask: Task<Void, Never>?
+    private var pdfScrollProgressTask: Task<Void, Never>?
     private var toastDismissTask: Task<Void, Never>?
     private var openBookGeneration: Int = 0
     private var manifoldSyncedOnce: Bool = false
@@ -308,7 +320,15 @@ public final class ReaderViewModel {
             self.pdfAppearance = parsedAppearance
         }
         self.pdfAutoCropEnabled = defaults.bool(forKey: "cohortReader.pdfAutoCropEnabled")
-        self.pdfTwoUpMode = defaults.bool(forKey: "cohortReader.pdfTwoUpMode")
+        let savedTwoUp = defaults.bool(forKey: "cohortReader.pdfTwoUpMode")
+        self.pdfTwoUpMode = savedTwoUp
+        if let rawLayout = defaults.string(forKey: "cohortReader.pdfDisplayLayout"),
+           let parsedLayout = PDFDisplayLayout(rawValue: rawLayout) {
+            self.pdfDisplayLayout = parsedLayout
+            self.pdfTwoUpMode = (parsedLayout == .spread)
+        } else if savedTwoUp {
+            self.pdfDisplayLayout = .spread
+        }
         self.isSidebarCollapsed = defaults.bool(forKey: "cohortReader.sidebarCollapsed")
         if let savedDeletedSigs = defaults.stringArray(forKey: "cohortReader.deletedSignatureIds") {
             self.deletedSignatureIds = Set(savedDeletedSigs)
@@ -345,6 +365,7 @@ public final class ReaderViewModel {
         defaults.set(pdfAppearance.rawValue, forKey: "cohortReader.pdfAppearance")
         defaults.set(pdfAutoCropEnabled, forKey: "cohortReader.pdfAutoCropEnabled")
         defaults.set(pdfTwoUpMode, forKey: "cohortReader.pdfTwoUpMode")
+        defaults.set(pdfDisplayLayout.rawValue, forKey: "cohortReader.pdfDisplayLayout")
         defaults.set(isSidebarCollapsed, forKey: "cohortReader.sidebarCollapsed")
         defaults.set(Array(deletedSignatureIds), forKey: "cohortReader.deletedSignatureIds")
     }
@@ -961,6 +982,7 @@ public final class ReaderViewModel {
         autoDownloadActiveTitle = nil
         openBookTask?.cancel()
         pdfSearchTask?.cancel()
+        pdfScrollProgressTask?.cancel()
         openBookGeneration += 1
         let generation = openBookGeneration
 
@@ -983,6 +1005,14 @@ public final class ReaderViewModel {
         pdfTwoColumnStep = 0
         pdfDetectedColumnCount = 1
         activePDFPageFrame = .zero
+        pdfJumpTargetPage = 0
+        pdfJumpToken += 1
+        epubCurrentPage = 1
+        epubCurrentPageEnd = 1
+        epubTotalPages = 1
+        epubCurrentSpread = 1
+        epubTotalSpreads = 1
+        scrubEPUBSpreadTarget = nil
         tocShowsPDFThumbnails = false
         openingBookId = book.id
         if switchTab {
@@ -1241,6 +1271,8 @@ public final class ReaderViewModel {
             } else {
                 activePDFPageIndex = 0
             }
+            pdfJumpTargetPage = activePDFPageIndex
+            pdfJumpToken += 1
             tocShowsPDFThumbnails = meta?.outline.isEmpty ?? false
             pdfThumbnailPageInput = "\(activePDFPageIndex + 1)"
             if !AssetImageCache.shared.hasImage(forBookId: book.id) {
@@ -1282,14 +1314,36 @@ public final class ReaderViewModel {
         )
     }
 
-    public func selectEPUBSpine(_ index: Int) async {
+    public func selectEPUBSpine(_ index: Int, startAtEnd: Bool = false) async {
         guard let doc = activeEPUB, index >= 0, index < doc.spineHrefs.count else { return }
+        let targetFrac = startAtEnd ? 1.0 : 0.0
+        let targetWordOffset: Int? = startAtEnd ? nil : 0
+        if var curBook = activeBook {
+            let count = doc.spineHrefs.count
+            curBook.locator = ReadingLocator(
+                spine: index,
+                fraction: targetFrac,
+                wordOffset: targetWordOffset,
+                pageIndex: nil,
+                spineCount: count,
+                overallProgress: count > 0 ? min(max((Double(index) + targetFrac) / Double(count), 0), 1) : targetFrac,
+                updatedAt: Date()
+            )
+            activeBook = curBook
+        }
+        epubCurrentPage = 1
+        epubCurrentPageEnd = 1
+        epubTotalPages = 1
+        epubCurrentSpread = 1
+        epubTotalSpreads = 1
+        scrubEPUBSpreadTarget = nil
         activeEPUBSpineIndex = index
-        await recordProgress(spine: index, fraction: 0, wordOffset: 0, pageIndex: nil)
+        await recordProgress(spine: index, fraction: targetFrac, wordOffset: targetWordOffset, pageIndex: nil)
     }
 
     public func selectPDFPage(_ pageIndex: Int, recordJump: Bool = false) async {
         guard let meta = activePDFMetadata, meta.pageCount > 0 else { return }
+        pdfScrollProgressTask?.cancel()
         let clamped = min(max(pageIndex, 0), meta.pageCount - 1)
         if clamped != activePDFPageIndex {
             if recordJump || abs(clamped - activePDFPageIndex) > 1 {
@@ -1301,17 +1355,39 @@ public final class ReaderViewModel {
             }
         }
         activePDFPageIndex = clamped
+        pdfJumpTargetPage = clamped
+        pdfJumpToken += 1
         pdfTwoColumnStep = 0
         let frac = PDFInspector.fraction(forPage: clamped, pageCount: meta.pageCount)
         await recordProgress(spine: clamped, fraction: frac, wordOffset: nil, pageIndex: clamped)
     }
 
+    public func notePDFPageScrolled(_ pageIndex: Int) {
+        guard let meta = activePDFMetadata, meta.pageCount > 0 else { return }
+        let clamped = min(max(pageIndex, 0), meta.pageCount - 1)
+        activePDFPageIndex = clamped
+        pdfTwoColumnStep = 0
+        pdfScrollProgressTask?.cancel()
+        pdfScrollProgressTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled,
+                  let self,
+                  let currentMeta = self.activePDFMetadata,
+                  currentMeta.pageCount > 0 else { return }
+            let frac = PDFInspector.fraction(forPage: clamped, pageCount: currentMeta.pageCount)
+            await self.recordProgress(spine: clamped, fraction: frac, wordOffset: nil, pageIndex: clamped)
+        }
+    }
+
     public func jumpBackInPDF() async {
         guard let prev = pdfJumpBackStack.popLast(),
               let meta = activePDFMetadata, meta.pageCount > 0 else { return }
+        pdfScrollProgressTask?.cancel()
         pdfJumpForwardStack.append(activePDFPageIndex)
         let clamped = min(max(prev, 0), meta.pageCount - 1)
         activePDFPageIndex = clamped
+        pdfJumpTargetPage = clamped
+        pdfJumpToken += 1
         pdfTwoColumnStep = 0
         let frac = PDFInspector.fraction(forPage: clamped, pageCount: meta.pageCount)
         await recordProgress(spine: clamped, fraction: frac, wordOffset: nil, pageIndex: clamped)
@@ -1320,9 +1396,12 @@ public final class ReaderViewModel {
     public func jumpForwardInPDF() async {
         guard let next = pdfJumpForwardStack.popLast(),
               let meta = activePDFMetadata, meta.pageCount > 0 else { return }
+        pdfScrollProgressTask?.cancel()
         pdfJumpBackStack.append(activePDFPageIndex)
         let clamped = min(max(next, 0), meta.pageCount - 1)
         activePDFPageIndex = clamped
+        pdfJumpTargetPage = clamped
+        pdfJumpToken += 1
         pdfTwoColumnStep = 0
         let frac = PDFInspector.fraction(forPage: clamped, pageCount: meta.pageCount)
         await recordProgress(spine: clamped, fraction: frac, wordOffset: nil, pageIndex: clamped)
@@ -1383,9 +1462,17 @@ public final class ReaderViewModel {
         savePreferences()
     }
 
-    public func togglePDFTwoUpMode() {
-        pdfTwoUpMode.toggle()
+    public func setPDFDisplayLayout(_ layout: PDFDisplayLayout) {
+        pdfDisplayLayout = layout
+        pdfTwoUpMode = (layout == .spread)
+        pdfZoomScale = 1.0
         savePreferences()
+        showToast("PDF: \(layout.rawValue)")
+    }
+
+    public func togglePDFTwoUpMode() {
+        let next: PDFDisplayLayout = (pdfDisplayLayout == .spread) ? .scroll : .spread
+        setPDFDisplayLayout(next)
     }
 
     // MARK: - Lightweight Vector PDF Signing
@@ -2362,6 +2449,33 @@ public final class ReaderViewModel {
         showToast("EPUB flow: \(typography.readingFlow.rawValue)")
     }
 
+    public func updateEPUBPagination(
+        spread: Int,
+        totalSpreads: Int,
+        page: Int,
+        pageEnd: Int,
+        totalPages: Int,
+        colsPerView: Int
+    ) {
+        epubTotalSpreads = max(1, totalSpreads)
+        epubCurrentSpread = min(max(1, spread), epubTotalSpreads)
+        epubTotalPages = max(1, totalPages)
+        epubCurrentPage = min(max(1, page), epubTotalPages)
+        epubCurrentPageEnd = min(max(epubCurrentPage, pageEnd), epubTotalPages)
+        epubColumnsPerSpread = max(1, colsPerView)
+    }
+
+    public func stepEPUBPage(delta: Int) {
+        epubPendingCommand = delta < 0 ? "pagePrev" : "pageNext"
+        epubCommandToken += 1
+    }
+
+    public func jumpToEPUBSpread(_ oneBasedSpread: Int) {
+        epubGoToSpreadTarget = min(max(1, oneBasedSpread), max(1, epubTotalSpreads))
+        epubPendingCommand = "goToSpread"
+        epubCommandToken += 1
+    }
+
     public func selectTabByNumber(_ oneBasedIndex: Int) async {
         let idx = oneBasedIndex - 1
         guard idx >= 0, idx < openTabs.count else { return }
@@ -2726,29 +2840,37 @@ public final class ReaderViewModel {
             return true
         case "h", "ArrowLeft":
             if activeEPUB != nil {
-                if typography.readingFlow == .paginated {
-                    epubPendingCommand = "pagePrev"
-                    epubCommandToken += 1
-                } else {
-                    Task { await self.selectEPUBSpine(self.activeEPUBSpineIndex - 1) }
-                }
+                epubPendingCommand = "pagePrev"
+                epubCommandToken += 1
                 return true
             } else if activePDFURL != nil {
-                Task { await self.stepPDFColumn(delta: -1) }
+                if pdfTwoColumnMode && pdfDetectedColumnCount >= 2 {
+                    Task { await self.stepPDFColumn(delta: -1) }
+                } else if pdfDisplayLayout == .scroll || pdfZoomScale > 1.02 {
+                    pdfPendingCommand = "pageUp"
+                    pdfCommandToken += 1
+                } else {
+                    pdfPendingCommand = "prevPage"
+                    pdfCommandToken += 1
+                }
                 return true
             }
             return false
         case "l", "ArrowRight":
             if activeEPUB != nil {
-                if typography.readingFlow == .paginated {
-                    epubPendingCommand = "pageNext"
-                    epubCommandToken += 1
-                } else {
-                    Task { await self.selectEPUBSpine(self.activeEPUBSpineIndex + 1) }
-                }
+                epubPendingCommand = "pageNext"
+                epubCommandToken += 1
                 return true
             } else if activePDFURL != nil {
-                Task { await self.stepPDFColumn(delta: 1) }
+                if pdfTwoColumnMode && pdfDetectedColumnCount >= 2 {
+                    Task { await self.stepPDFColumn(delta: 1) }
+                } else if pdfDisplayLayout == .scroll || pdfZoomScale > 1.02 {
+                    pdfPendingCommand = "pageDown"
+                    pdfCommandToken += 1
+                } else {
+                    pdfPendingCommand = "nextPage"
+                    pdfCommandToken += 1
+                }
                 return true
             }
             return false

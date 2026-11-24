@@ -506,6 +506,12 @@ public enum EPUBReadingFlow: String, Codable, Sendable, CaseIterable {
     case paginated = "Pages"
 }
 
+public enum PDFDisplayLayout: String, Codable, Sendable, CaseIterable {
+    case scroll = "Scroll"
+    case page = "Page"
+    case spread = "Spread"
+}
+
 public enum ShelfSortOrder: String, Codable, Sendable, CaseIterable {
     case recent = "Recent"
     case title = "Title"
@@ -529,7 +535,7 @@ public struct ReaderTypography: Codable, Sendable, Hashable {
         lineHeight: 1.58,
         marginWidth: .standard,
         textAlignment: .left,
-        readingFlow: .scroll
+        readingFlow: .paginated
     )
 
     public init(
@@ -539,7 +545,7 @@ public struct ReaderTypography: Codable, Sendable, Hashable {
         lineHeight: Double,
         marginWidth: ReaderMarginWidth = .standard,
         textAlignment: ReaderTextAlignment = .left,
-        readingFlow: EPUBReadingFlow = .scroll
+        readingFlow: EPUBReadingFlow = .paginated
     ) {
         self.theme = theme
         self.fontFamily = fontFamily
@@ -568,7 +574,7 @@ public struct ReaderTypography: Codable, Sendable, Hashable {
         let lineHeight = try c.decodeIfPresent(Double.self, forKey: .lineHeight) ?? 1.58
         let marginWidth = try c.decodeIfPresent(ReaderMarginWidth.self, forKey: .marginWidth) ?? .standard
         let textAlignment = try c.decodeIfPresent(ReaderTextAlignment.self, forKey: .textAlignment) ?? .left
-        let readingFlow = try c.decodeIfPresent(EPUBReadingFlow.self, forKey: .readingFlow) ?? .scroll
+        let readingFlow = try c.decodeIfPresent(EPUBReadingFlow.self, forKey: .readingFlow) ?? .paginated
         self.init(
             theme: theme,
             fontFamily: fontFamily,

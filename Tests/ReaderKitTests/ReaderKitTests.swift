@@ -701,7 +701,7 @@ struct ReaderKitTests {
         {"theme":"Paper","fontFamily":"Serif","fontSize":19,"lineHeight":1.6,"marginWidth":"Standard","textAlignment":"Left"}
         """.utf8)
         let decoded = try JSONDecoder().decode(ReaderTypography.self, from: legacyJSON)
-        #expect(decoded.readingFlow == .scroll)
+        #expect(decoded.readingFlow == .paginated)
 
         var pagedTypo = ReaderTypography.default
         pagedTypo.readingFlow = .paginated
@@ -714,10 +714,26 @@ struct ReaderKitTests {
             resolvedTheme: .paper,
             highlights: []
         )
-        #expect(html.contains("column-width"))
-        #expect(html.contains("scroll-snap-type: x mandatory"))
+        #expect(html.contains("#cr-book"))
+        #expect(html.contains("#cr-spine"))
+        #expect(html.contains("window.__cohortStepPage"))
+        #expect(html.contains("window.__cohortGoToSpread"))
+        #expect(html.contains("post('pagination'"))
         #expect(html.contains("IS_PAGINATED = true"))
         #expect(html.contains("window.__cohortAddHighlight"))
+
+        var scrollTypo = ReaderTypography.default
+        scrollTypo.readingFlow = .scroll
+        let scrollHtml = EPUBHTMLComposer.composeChapterHTML(
+            rawXHTML: "<html><body><p>Hello world from chapter one.</p></body></html>",
+            typography: scrollTypo,
+            notes: [],
+            initialFraction: 0,
+            initialWordOffset: nil,
+            resolvedTheme: .paper
+        )
+        #expect(scrollHtml.contains("max-width: 660px"))
+        #expect(scrollHtml.contains("IS_PAGINATED = false"))
 
         let js = EPUBHTMLComposer.typographyUpdateJS(typography: pagedTypo, resolvedTheme: .sepia)
         #expect(js.contains("window.__cohortApplyTypography"))
@@ -869,6 +885,8 @@ struct ReaderKitTests {
         let ctx = try #require(CGContext(pdfURL as CFURL, mediaBox: &box, nil))
         ctx.beginPDFPage(nil)
         ctx.endPDFPage()
+        ctx.beginPDFPage(nil)
+        ctx.endPDFPage()
         ctx.closePDF()
 
         let store = try ReaderStore(dbPath: dbTmp.appendingPathComponent("keys.sqlite").path, cacheRoot: dbTmp)
@@ -879,7 +897,7 @@ struct ReaderKitTests {
         )
         await vm.bootstrap(loadSampleBook: true, runNetworkSync: false)
 
-        // 1. Archival EPUB CSS/JS helpers present
+        // 1. Archival EPUB CSS/JS helpers present (default paginated spread + scroll measure)
         let lightHTML = EPUBHTMLComposer.composeChapterHTML(
             rawXHTML: "<html><body><p>Test</p></body></html>",
             typography: .default,
@@ -889,8 +907,19 @@ struct ReaderKitTests {
             resolvedTheme: .paper
         )
         #expect(lightHTML.contains("#9E3424"))
-        #expect(lightHTML.contains("max-width: 660px"))
+        #expect(lightHTML.contains("#cr-book"))
         #expect(lightHTML.contains("window.__cohortFind"))
+        var scrollTypo = ReaderTypography.default
+        scrollTypo.readingFlow = .scroll
+        let scrollHTML = EPUBHTMLComposer.composeChapterHTML(
+            rawXHTML: "<html><body><p>Test</p></body></html>",
+            typography: scrollTypo,
+            notes: [],
+            initialFraction: 0,
+            initialWordOffset: nil,
+            resolvedTheme: .paper
+        )
+        #expect(scrollHTML.contains("max-width: 660px"))
 
         let darkHTML = EPUBHTMLComposer.composeChapterHTML(
             rawXHTML: "<html><body><p>Test</p></body></html>",
@@ -915,8 +944,20 @@ struct ReaderKitTests {
         let initialTheme = vm.typography.theme
         vm.cycleActiveReadingTheme()
         #expect(vm.typography.theme != initialTheme)
+        #expect(vm.typography.readingFlow == .paginated)
+        vm.toggleEPUBReadingFlow()
+        #expect(vm.typography.readingFlow == .scroll)
+        // ArrowLeft / ArrowRight always turn pages (never jump chapters) even in Scroll mode
+        #expect(vm.handleSingleKeyCommand("ArrowRight"))
+        #expect(vm.epubPendingCommand == "pageNext")
+        #expect(vm.handleSingleKeyCommand("ArrowLeft"))
+        #expect(vm.epubPendingCommand == "pagePrev")
         vm.toggleEPUBReadingFlow()
         #expect(vm.typography.readingFlow == .paginated)
+        #expect(vm.handleSingleKeyCommand("ArrowRight"))
+        #expect(vm.epubPendingCommand == "pageNext")
+        #expect(vm.handleSingleKeyCommand("ArrowLeft"))
+        #expect(vm.epubPendingCommand == "pagePrev")
 
         // 3. Single-key dispatch on EPUB + hierarchical Escape
         #expect(vm.handleSingleKeyCommand("?"))
@@ -968,13 +1009,14 @@ struct ReaderKitTests {
         #expect(vm.handleSingleKeyCommand("0"))
         #expect(vm.typography.fontSize == 18)
 
-        // Chapter stepping via navigateForwardOrNext / navigateBackOrPrevious and [ / ]
+        // Chapter stepping via navigateForwardOrNext / navigateBackOrPrevious (startAtEnd) and [ / ]
         let startSpine = vm.activeEPUBSpineIndex
         if (vm.activeEPUB?.spineHrefs.count ?? 0) > 1 {
             await vm.navigateForwardOrNext()
             #expect(vm.activeEPUBSpineIndex == startSpine + 1)
-            await vm.navigateBackOrPrevious()
+            await vm.selectEPUBSpine(startSpine, startAtEnd: true)
             #expect(vm.activeEPUBSpineIndex == startSpine)
+            #expect(vm.activeBook?.locator?.fraction == 1.0)
         }
         #expect(vm.handleSingleKeyCommand("]"))
         #expect(vm.handleSingleKeyCommand("["))
@@ -998,9 +1040,32 @@ struct ReaderKitTests {
         #expect(vm.isSidebarCollapsed == true)
         #expect(vm.isCommandPalettePresented == false)
 
-        // 5. Switch to PDF -> unified scale & PDF single-key commands
+        // 5. Switch to PDF -> unified scale, race-free scroll vs jump, & layout-aware Arrow keys
         await vm.quickOpenExternalFile(from: pdfURL)
         #expect(vm.activePDFURL == pdfURL)
+        #expect(vm.pdfDisplayLayout == .scroll)
+        #expect(vm.handleSingleKeyCommand("ArrowRight"))
+        #expect(vm.pdfPendingCommand == "pageDown")
+        #expect(vm.handleSingleKeyCommand("ArrowLeft"))
+        #expect(vm.pdfPendingCommand == "pageUp")
+
+        let tokenBeforeScroll = vm.pdfJumpToken
+        vm.notePDFPageScrolled(1)
+        #expect(vm.activePDFPageIndex == 1)
+        #expect(vm.pdfJumpToken == tokenBeforeScroll)
+
+        await vm.selectPDFPage(0)
+        #expect(vm.activePDFPageIndex == 0)
+        #expect(vm.pdfJumpToken == tokenBeforeScroll + 1)
+
+        vm.setPDFDisplayLayout(.page)
+        #expect(vm.pdfDisplayLayout == .page)
+        #expect(vm.handleSingleKeyCommand("ArrowRight"))
+        #expect(vm.pdfPendingCommand == "nextPage")
+        #expect(vm.handleSingleKeyCommand("ArrowLeft"))
+        #expect(vm.pdfPendingCommand == "prevPage")
+
+        vm.setPDFDisplayLayout(.scroll)
         #expect(vm.handleSingleKeyCommand("PageDown"))
         #expect(vm.pdfPendingCommand == "pageDown")
         #expect(vm.handleSingleKeyCommand("PageUp"))
@@ -1017,6 +1082,7 @@ struct ReaderKitTests {
         #expect(vm.pdfZoomScale == 1.0)
         #expect(vm.handleSingleKeyCommand("2"))
         #expect(vm.pdfTwoUpMode == true)
+        #expect(vm.pdfDisplayLayout == .spread)
         #expect(vm.handleSingleKeyCommand("c"))
         #expect(vm.pdfAutoCropEnabled == true)
 

@@ -408,10 +408,10 @@ public struct KeyboardShortcutsOverlay: View {
             Entry(label: "Find Inline", keys: "⌘F /"),
             Entry(label: "Next / Prev Hit", keys: "↩ ⇧↩ n N"),
             Entry(label: "Go to Page / Ch", keys: ": ⌘G"),
+            Entry(label: "Turn Page", keys: "← → ␣ ⌫"),
+            Entry(label: "Prev / Next Ch", keys: "⌘[ ⌘] [ ]"),
             Entry(label: "Scroll / Half Pg", keys: "j k d u"),
-            Entry(label: "Page / Chapter", keys: "␣ ⌫ h l"),
             Entry(label: "Top / Bottom", keys: "g G"),
-            Entry(label: "Back / Fwd", keys: "⌘[ ⌘]"),
         ]
     }
 
@@ -420,7 +420,7 @@ public struct KeyboardShortcutsOverlay: View {
             Entry(label: "Zoom / Scale", keys: "⌘= ⌘-"),
             Entry(label: "Reset Scale", keys: "⌘0"),
             Entry(label: "Cycle Theme", keys: "⌥⌘T t"),
-            Entry(label: "EPUB Scroll/Pages", keys: "⌥⌘P p"),
+            Entry(label: "Pages / Scroll", keys: "p ⌥⌘P"),
             Entry(label: "Two-Page Spread", keys: "⌥⌘2 2"),
             Entry(label: "Crop Margins", keys: "⌥⌘C c"),
             Entry(label: "Contents", keys: "⌘T"),

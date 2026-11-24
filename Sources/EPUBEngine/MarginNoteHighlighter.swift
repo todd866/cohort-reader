@@ -40,6 +40,7 @@ public enum MarginNoteHighlighter {
 
 public enum EPUBHTMLComposer {
     private struct Palette {
+        var desk: String
         var bg: String
         var fg: String
         var muted: String
@@ -52,6 +53,7 @@ public enum EPUBHTMLComposer {
         switch theme {
         case .auto, .paper:
             return Palette(
+                desk: "#EAE3D5",
                 bg: "#FAF7F1",
                 fg: "#1B1815",
                 muted: "#6D6459",
@@ -61,6 +63,7 @@ public enum EPUBHTMLComposer {
             )
         case .sepia:
             return Palette(
+                desk: "#E4D6BC",
                 bg: "#F3EAD8",
                 fg: "#2B2218",
                 muted: "#6C5B46",
@@ -70,6 +73,7 @@ public enum EPUBHTMLComposer {
             )
         case .ink:
             return Palette(
+                desk: "#0B0A09",
                 bg: "#121110",
                 fg: "#F0EBE2",
                 muted: "#9B958B",
@@ -98,6 +102,7 @@ public enum EPUBHTMLComposer {
         let effectiveTheme = resolvedTheme ?? (typography.theme == .auto ? .paper : typography.theme)
         let pal = palette(for: effectiveTheme)
         let cfg: [String: String] = [
+            "desk": pal.desk,
             "bg": pal.bg,
             "fg": pal.fg,
             "muted": pal.muted,
@@ -139,28 +144,61 @@ public enum EPUBHTMLComposer {
         let isPaginated = (typography.readingFlow == .paginated)
 
         let paginatedCSS = isPaginated ? """
-          html {
+          html, body {
+            width: 100vw !important;
             height: 100vh !important;
             overflow: hidden !important;
             margin: 0 !important;
             padding: 0 !important;
+            background: var(--cr-desk) !important;
           }
-          body {
-            height: calc(100vh - 8px) !important;
-            width: 100vw !important;
-            max-width: none !important;
-            box-sizing: border-box !important;
-            margin: 0 !important;
-            padding: 18px var(--cr-pad-x) 24px var(--cr-pad-x) !important;
-            column-width: calc(100vw - 2 * var(--cr-pad-x)) !important;
-            column-gap: calc(2 * var(--cr-pad-x)) !important;
+          #cr-desk {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--cr-desk);
+            overflow: hidden;
+            box-sizing: border-box;
+          }
+          #cr-book {
+            position: relative;
+            background: var(--cr-bg);
+            overflow: hidden;
+            box-sizing: border-box;
+          }
+          #cr-book.framed {
+            border: 1px solid var(--cr-border);
+            border-radius: 8px;
+            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+          }
+          #cr-spine {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 50%;
+            width: 28px;
+            transform: translateX(-50%);
+            pointer-events: none;
+            z-index: 4;
+            background: linear-gradient(90deg, transparent, rgba(0,0,0,0.045) 45%, rgba(0,0,0,0.10) 50%, rgba(0,0,0,0.03) 55%, transparent);
+          }
+          #cr-scroller {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            position: relative;
+          }
+          #cr-content {
+            box-sizing: border-box;
             column-fill: auto !important;
-            overflow-x: auto !important;
-            overflow-y: hidden !important;
-            scroll-snap-type: x mandatory;
-            -webkit-overflow-scrolling: touch;
+            will-change: transform;
+            transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
           }
-          img, svg { max-height: 74vh !important; }
+          #cr-content.instant { transition: none !important; }
+          #cr-content img, #cr-content svg { max-height: 70vh !important; break-inside: avoid; }
+          #cr-content h1, #cr-content h2, #cr-content h3 { break-after: avoid; }
         """ : """
           html {
             margin: 0 !important;
@@ -178,6 +216,7 @@ public enum EPUBHTMLComposer {
         <meta http-equiv="Content-Security-Policy" content="default-src 'self' cohortbook: data:; style-src 'unsafe-inline' cohortbook:; script-src 'unsafe-inline'; img-src cohortbook: data:;"/>
         <style id="cohort-reader-theme">
           :root {
+            --cr-desk: \(colors.desk);
             --cr-bg: \(colors.bg);
             --cr-fg: \(colors.fg);
             --cr-muted: \(colors.muted);
@@ -248,10 +287,142 @@ public enum EPUBHTMLComposer {
           const HIGHLIGHTS = \(highlightsJSON);
           const IS_PAGINATED = \(isPaginated ? "true" : "false");
           let userInteracted = false;
+          let bookDesk = null;
+          let bookShell = null;
+          let bookSpine = null;
+          let bookScroller = null;
+          let bookContent = null;
+          let stageW = 0;
+          let stageH = 0;
+          let colsPerSpread = 1;
+          let totalCols = 1;
+          let totalSpreads = 1;
+          let spreadIdx = 0;
+          let wheelLockUntil = 0;
+
+          function currentRoot() {
+            return bookContent || document.body;
+          }
+
+          function currentFraction() {
+            if (IS_PAGINATED) {
+              return totalSpreads <= 1 ? 0 : (spreadIdx / (totalSpreads - 1));
+            }
+            const maxScroll = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+            return Math.min(1, Math.max(0, window.scrollY / maxScroll));
+          }
+
+          function ensureBookStage() {
+            if (!IS_PAGINATED || !document.body || bookContent) return;
+            bookDesk = document.createElement('div');
+            bookDesk.id = 'cr-desk';
+            bookShell = document.createElement('div');
+            bookShell.id = 'cr-book';
+            bookSpine = document.createElement('div');
+            bookSpine.id = 'cr-spine';
+            bookScroller = document.createElement('div');
+            bookScroller.id = 'cr-scroller';
+            bookContent = document.createElement('div');
+            bookContent.id = 'cr-content';
+            while (document.body.firstChild) {
+              const ch = document.body.firstChild;
+              if (ch.nodeName && ch.nodeName.toLowerCase() === 'script') {
+                document.body.removeChild(ch);
+                continue;
+              }
+              bookContent.appendChild(ch);
+            }
+            bookScroller.appendChild(bookContent);
+            bookShell.appendChild(bookSpine);
+            bookShell.appendChild(bookScroller);
+            bookDesk.appendChild(bookShell);
+            document.body.appendChild(bookDesk);
+          }
+
+          function applySpread(instant) {
+            if (!IS_PAGINATED || !bookContent) return;
+            spreadIdx = Math.min(totalSpreads - 1, Math.max(0, spreadIdx));
+            if (instant) bookContent.classList.add('instant');
+            bookContent.style.transform = 'translateX(' + (-spreadIdx * stageW) + 'px)';
+            const firstPage = spreadIdx * colsPerSpread + 1;
+            const lastPage = Math.min(totalCols, firstPage + colsPerSpread - 1);
+            post('pagination', {
+              spread: spreadIdx + 1,
+              totalSpreads,
+              page: firstPage,
+              pageEnd: lastPage,
+              totalPages: totalCols,
+              colsPerView: colsPerSpread
+            });
+            emitProgress();
+            if (instant) {
+              requestAnimationFrame(function() {
+                if (bookContent) bookContent.classList.remove('instant');
+              });
+            }
+          }
+
+          function layoutPages(preserveFrac) {
+            if (!IS_PAGINATED) return;
+            ensureBookStage();
+            if (!bookShell || !bookScroller || !bookContent) return;
+            const deskW = Math.max(280, window.innerWidth);
+            const deskH = Math.max(320, window.innerHeight);
+            colsPerSpread = deskW >= 860 ? 2 : 1;
+            let colW = 300;
+            let gutter = 56;
+            if (colsPerSpread === 2) {
+              const deskMarginX = 48;
+              const deskMarginY = 18;
+              gutter = 56;
+              const maxBookW = Math.min(1040, deskW - 2 * deskMarginX);
+              colW = Math.max(260, Math.floor((maxBookW - 2 * gutter) / 2));
+              stageW = 2 * colW + 2 * gutter;
+              stageH = Math.max(260, deskH - 2 * deskMarginY);
+              bookShell.classList.add('framed');
+              if (bookSpine) bookSpine.style.display = 'block';
+              bookShell.style.width = stageW + 'px';
+              bookShell.style.height = stageH + 'px';
+              bookContent.style.width = stageW + 'px';
+              bookContent.style.height = stageH + 'px';
+              bookContent.style.padding = '28px 28px 30px 28px';
+            } else {
+              const isPhone = deskW < 540;
+              stageW = isPhone ? deskW : Math.min(680, deskW - 88);
+              stageH = isPhone ? deskH : Math.max(260, deskH - 28);
+              bookShell.classList.toggle('framed', !isPhone);
+              if (bookSpine) bookSpine.style.display = 'none';
+              const cssPad = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--cr-pad-x')) || 22;
+              const pad = isPhone ? Math.max(18, Math.min(34, cssPad)) : 32;
+              colW = Math.max(200, stageW - 2 * pad);
+              gutter = 2 * pad;
+              bookShell.style.width = stageW + 'px';
+              bookShell.style.height = stageH + 'px';
+              bookContent.style.width = stageW + 'px';
+              bookContent.style.height = stageH + 'px';
+              bookContent.style.padding = (isPhone ? 20 : 28) + 'px ' + pad + 'px 28px ' + pad + 'px';
+            }
+            bookContent.style.columnWidth = colW + 'px';
+            bookContent.style.columnGap = gutter + 'px';
+            bookContent.classList.add('instant');
+            bookContent.style.transform = 'translateX(0px)';
+
+            const sw = Math.max(stageW, bookScroller.scrollWidth, bookContent.scrollWidth);
+            const colStride = Math.max(1, colW + gutter);
+            totalCols = Math.max(1, Math.ceil((sw - 12) / colStride));
+            totalSpreads = Math.max(1, Math.ceil(totalCols / colsPerSpread));
+
+            if (preserveFrac !== null && preserveFrac !== undefined && !isNaN(preserveFrac)) {
+              const f = Math.min(1, Math.max(0, Number(preserveFrac)));
+              spreadIdx = f >= 0.999 ? (totalSpreads - 1) : Math.min(totalSpreads - 1, Math.max(0, Math.round(f * (totalSpreads - 1))));
+            }
+            applySpread(true);
+          }
 
           window.__cohortApplyTypography = function(cfg) {
             if (!cfg || !document.documentElement) return;
             const s = document.documentElement.style;
+            if (cfg.desk) s.setProperty('--cr-desk', cfg.desk);
             if (cfg.bg) s.setProperty('--cr-bg', cfg.bg);
             if (cfg.fg) s.setProperty('--cr-fg', cfg.fg);
             if (cfg.muted) s.setProperty('--cr-muted', cfg.muted);
@@ -263,10 +434,14 @@ public enum EPUBHTMLComposer {
             if (cfg.lh) s.setProperty('--cr-lh', cfg.lh);
             if (cfg.padX) s.setProperty('--cr-pad-x', cfg.padX);
             if (cfg.align) s.setProperty('--cr-align', cfg.align);
+            if (IS_PAGINATED) {
+              const frac = currentFraction();
+              requestAnimationFrame(function() { layoutPages(frac); });
+            }
           };
 
           window.__cohortAddHighlight = function(quote) {
-            if (!quote || !document.body) return;
+            if (!quote || !currentRoot()) return;
             const clean = String(quote).trim();
             if (!clean) return;
             wrapMatches([{ anchor: clean }], function() {
@@ -286,7 +461,7 @@ public enum EPUBHTMLComposer {
               const txt = document.createTextNode(el.textContent || '');
               if (el.parentNode) el.parentNode.replaceChild(txt, el);
             }
-            if (document.body) document.body.normalize();
+            if (currentRoot()) currentRoot().normalize();
             findHits = [];
             findIdx = -1;
             lastFindQuery = '';
@@ -295,7 +470,8 @@ public enum EPUBHTMLComposer {
 
           window.__cohortFind = function(query, direction) {
             const q = String(query || '').trim();
-            if (!q || !document.body) {
+            const root = currentRoot();
+            if (!q || !root) {
               window.__cohortClearFind();
               return;
             }
@@ -304,7 +480,7 @@ public enum EPUBHTMLComposer {
               window.__cohortClearFind();
               lastFindQuery = q;
               const lowerQ = q.toLowerCase();
-              const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+              const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
               const matches = [];
               for (let n = walker.nextNode(); n; n = walker.nextNode()) {
                 const raw = n.data || '';
@@ -336,9 +512,27 @@ public enum EPUBHTMLComposer {
             if (findIdx >= 0 && findHits[findIdx]) {
               const activeEl = findHits[findIdx];
               activeEl.classList.add('cohort-find-active');
-              activeEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+              if (IS_PAGINATED && bookContent && stageW > 0) {
+                const hitX = activeEl.getBoundingClientRect().left - bookContent.getBoundingClientRect().left;
+                spreadIdx = Math.min(totalSpreads - 1, Math.max(0, Math.floor(Math.max(0, hitX) / Math.max(1, stageW))));
+                userInteracted = true;
+                applySpread(false);
+              } else {
+                activeEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+              }
             }
             post('findStatus', { current: findHits.length ? (findIdx + 1) : 0, total: findHits.length });
+          };
+
+          window.__cohortStepPage = function(dir) {
+            stepPage(dir >= 0 ? 1 : -1);
+          };
+
+          window.__cohortGoToSpread = function(oneBased) {
+            if (!IS_PAGINATED) return;
+            userInteracted = true;
+            spreadIdx = Math.min(totalSpreads - 1, Math.max(0, (Number(oneBased) || 1) - 1));
+            applySpread(false);
           };
 
           window.__cohortScrollBy = function(deltaY) {
@@ -353,14 +547,16 @@ public enum EPUBHTMLComposer {
           window.__cohortJumpEdge = function(edge) {
             userInteracted = true;
             if (edge === 'bottom') {
-              if (IS_PAGINATED && document.body) {
-                document.body.scrollTo({ left: Math.max(0, document.body.scrollWidth - window.innerWidth), behavior: 'smooth' });
+              if (IS_PAGINATED) {
+                spreadIdx = totalSpreads - 1;
+                applySpread(false);
               } else {
                 window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
               }
             } else {
-              if (IS_PAGINATED && document.body) {
-                document.body.scrollTo({ left: 0, behavior: 'smooth' });
+              if (IS_PAGINATED) {
+                spreadIdx = 0;
+                applySpread(false);
               } else {
                 window.scrollTo({ top: 0, behavior: 'smooth' });
               }
@@ -375,7 +571,8 @@ public enum EPUBHTMLComposer {
           }
 
           function buildTextIndex() {
-            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            const root = currentRoot();
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
             const nodes = [];
             let text = '';
             const origin = [];
@@ -393,7 +590,7 @@ public enum EPUBHTMLComposer {
           }
 
           function wrapMatches(items, makeSpan) {
-            if (!items.length || !document.body) return;
+            if (!items.length || !currentRoot()) return;
             const idx = buildTextIndex();
             const wraps = [];
             for (const entry of items) {
@@ -454,22 +651,19 @@ public enum EPUBHTMLComposer {
           function stepPage(dir) {
             userInteracted = true;
             if (IS_PAGINATED) {
-              const el = document.body;
-              const step = Math.max(200, window.innerWidth);
-              const maxX = Math.max(0, el.scrollWidth - window.innerWidth);
               if (dir < 0) {
-                if (el.scrollLeft <= 10) {
+                if (spreadIdx <= 0) {
                   post('zoneTap', { zone: 'prev' });
                 } else {
-                  const target = Math.max(0, Math.round((el.scrollLeft - step) / step) * step);
-                  el.scrollTo({ left: target, behavior: 'smooth' });
+                  spreadIdx -= 1;
+                  applySpread(false);
                 }
               } else {
-                if (el.scrollLeft >= maxX - 10) {
+                if (spreadIdx >= totalSpreads - 1) {
                   post('zoneTap', { zone: 'next' });
                 } else {
-                  const target = Math.min(maxX, Math.round((el.scrollLeft + step) / step) * step);
-                  el.scrollTo({ left: target, behavior: 'smooth' });
+                  spreadIdx += 1;
+                  applySpread(false);
                 }
               }
               return;
@@ -567,6 +761,18 @@ public enum EPUBHTMLComposer {
                 stepPage(dx < 0 ? 1 : -1);
               }
             }, { passive: true });
+
+            window.addEventListener('wheel', function(ev) {
+              const absX = Math.abs(ev.deltaX || 0);
+              const absY = Math.abs(ev.deltaY || 0);
+              if (absX < 24 && absY < 36) return;
+              ev.preventDefault();
+              const now = Date.now();
+              if (now < wheelLockUntil) return;
+              wheelLockUntil = now + 240;
+              const primary = absX >= absY ? ev.deltaX : ev.deltaY;
+              stepPage(primary > 0 ? 1 : -1);
+            }, { passive: false });
           }
 
           document.addEventListener('selectionchange', function() {
@@ -582,7 +788,7 @@ public enum EPUBHTMLComposer {
             const targetFrac = \(initialFraction);
             const wordTarget = \(wordOffsetJS);
             if (typeof wordTarget === 'number' && wordTarget > 0) {
-              const full = (document.body.innerText || '').trim();
+              const full = ((currentRoot() && currentRoot().innerText) || '').trim();
               const totalWords = Math.max(1, full.split(/\\s+/).length);
               return Math.min(1, Math.max(0, wordTarget / totalWords));
             }
@@ -592,29 +798,19 @@ public enum EPUBHTMLComposer {
           function restorePosition() {
             if (userInteracted) return;
             const estFrac = computeTargetFraction();
-            if (estFrac <= 0) return;
             if (IS_PAGINATED) {
-              const el = document.body;
-              const step = Math.max(200, window.innerWidth);
-              const maxX = Math.max(0, el.scrollWidth - window.innerWidth);
-              const pageIdx = Math.round((estFrac * maxX) / step);
-              el.scrollLeft = Math.min(maxX, pageIdx * step);
-            } else {
-              const maxScroll = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
-              window.scrollTo(0, estFrac * maxScroll);
+              layoutPages(estFrac);
+              return;
             }
+            if (estFrac <= 0) return;
+            const maxScroll = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+            window.scrollTo(0, estFrac * maxScroll);
           }
 
           function emitProgress() {
-            const words = ((document.body.innerText || '').trim().split(/\\s+/).filter(Boolean)).length;
-            let fraction = 0;
-            if (IS_PAGINATED) {
-              const maxX = Math.max(1, document.body.scrollWidth - window.innerWidth);
-              fraction = Math.min(1, Math.max(0, document.body.scrollLeft / maxX));
-            } else {
-              const maxScroll = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
-              fraction = Math.min(1, Math.max(0, window.scrollY / maxScroll));
-            }
+            const root = currentRoot();
+            const words = (((root && root.innerText) || '').trim().split(/\\s+/).filter(Boolean)).length;
+            const fraction = currentFraction();
             const wordOffset = Math.round(fraction * words);
             post('progress', { fraction, wordOffset });
           }
@@ -626,12 +822,21 @@ public enum EPUBHTMLComposer {
             scrollTimer = setTimeout(emitProgress, 180);
           }
 
-          window.addEventListener('scroll', scheduleProgress, { passive: true });
-          if (IS_PAGINATED && document.body) {
-            document.body.addEventListener('scroll', scheduleProgress, { passive: true });
+          if (!IS_PAGINATED) {
+            window.addEventListener('scroll', scheduleProgress, { passive: true });
+          } else {
+            let resizeTimer = null;
+            window.addEventListener('resize', function() {
+              clearTimeout(resizeTimer);
+              const frac = currentFraction();
+              resizeTimer = setTimeout(function() {
+                layoutPages(frac);
+              }, 120);
+            });
           }
 
           window.addEventListener('DOMContentLoaded', function() {
+            ensureBookStage();
             markHighlights();
             markNotes();
             requestAnimationFrame(restorePosition);
