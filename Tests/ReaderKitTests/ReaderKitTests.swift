@@ -512,6 +512,188 @@ struct ReaderKitTests {
             #expect(!sampleCh.plainText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
+
+    @Test("PDF crop analyzer, column detector, search, vector signing flatten, and Quick Open tabs")
+    @MainActor
+    func pdfEnhancementsAndVectorSigning() async throws {
+        // 1. Margin auto-crop trims wide margins while enclosing ink bounds
+        let wideMarginURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wide-margin-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: wideMarginURL) }
+
+        var letterBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        do {
+            let ctx = try #require(CGContext(wideMarginURL as CFURL, mediaBox: &letterBox, nil))
+            // Two pages (crop analyzer samples interior page indices)
+            for pageNum in 0..<2 {
+                ctx.beginPDFPage(nil)
+                ctx.setFillColor(red: 0.08, green: 0.08, blue: 0.10, alpha: 1.0)
+                ctx.fill(CGRect(x: 170, y: 420, width: 280, height: 220))
+                let bodyFont = CTFontCreateWithName("Helvetica" as CFString, 12, nil)
+                let attr = NSAttributedString(
+                    string: "Page \(pageNum + 1) Bayesian inference content block",
+                    attributes: [NSAttributedString.Key(kCTFontAttributeName as String): bodyFont]
+                )
+                let line = CTLineCreateWithAttributedString(attr)
+                ctx.textPosition = CGPoint(x: 170, y: 400)
+                CTLineDraw(line, ctx)
+                ctx.endPDFPage()
+            }
+            ctx.closePDF()
+        }
+
+        let wideDoc = try #require(PDFDocument(url: wideMarginURL))
+        let p1 = try #require(wideDoc.page(at: 1))
+        let inkRect = try #require(PDFCropAnalyzer.computeInkCropRect(for: p1))
+        #expect(inkRect.minX >= 145 && inkRect.minX <= 172)
+        #expect(inkRect.maxX >= 445 && inkRect.maxX <= 495)
+        #expect(inkRect.minY >= 380 && inkRect.maxY <= 665)
+
+        let insets = try #require(PDFCropAnalyzer.computeDocumentCropInsets(for: wideDoc))
+        PDFCropAnalyzer.applyCrop(insets, to: wideDoc)
+        let croppedBounds = try #require(wideDoc.page(at: 1)).bounds(for: .cropBox)
+        #expect(croppedBounds.width < 460)
+        #expect(croppedBounds.height < 420)
+        PDFCropAnalyzer.applyCrop(nil, to: wideDoc)
+        #expect(wideDoc.page(at: 1)?.bounds(for: .cropBox).width == 612)
+
+        // 2. PDF search finds text on page 2
+        let hits = PDFSearch.search(document: wideDoc, query: "Bayesian")
+        #expect(hits.count >= 1)
+        #expect(hits.contains(where: { $0.pageIndex == 0 && $0.snippet.contains("Bayesian") }))
+
+        // 3. Two-column academic detector separates left and right text streams
+        let twoColURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("two-col-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: twoColURL) }
+        do {
+            let ctx = try #require(CGContext(twoColURL as CFURL, mediaBox: &letterBox, nil))
+            ctx.beginPDFPage(nil)
+            let font = CTFontCreateWithName("Helvetica" as CFString, 11, nil)
+            for row in 0..<8 {
+                let y = 700 - CGFloat(row) * 20
+                let leftAttr = NSAttributedString(
+                    string: "Left column line \(row) with standard prose",
+                    attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font]
+                )
+                ctx.textPosition = CGPoint(x: 42, y: y)
+                CTLineDraw(CTLineCreateWithAttributedString(leftAttr), ctx)
+
+                let rightAttr = NSAttributedString(
+                    string: "Right column line \(row) with crisp spacing",
+                    attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font]
+                )
+                ctx.textPosition = CGPoint(x: 332, y: y)
+                CTLineDraw(CTLineCreateWithAttributedString(rightAttr), ctx)
+            }
+            ctx.endPDFPage()
+            ctx.closePDF()
+        }
+        let colDoc = try #require(PDFDocument(url: twoColURL))
+        let detectedCols = PDFColumnDetector.detectColumns(on: try #require(colDoc.page(at: 0)))
+        #expect(detectedCols.count == 2)
+        #expect(detectedCols[0].maxX < detectedCols[1].minX + 15)
+
+        // 4. SignatureStore + PDFSigner vector flatten preserves text and stamps signature + date
+        let sigURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sigs-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: sigURL) }
+        let sig = SavedSignature(
+            label: "Primary",
+            strokes: [[
+                SignaturePoint(x: 0.1, y: 0.5),
+                SignaturePoint(x: 0.5, y: 0.2),
+                SignaturePoint(x: 0.9, y: 0.6),
+            ]],
+            inkColor: .navy,
+            aspectRatio: 2.5
+        )
+        try SignatureStore.save([sig], to: sigURL)
+        #expect(SignatureStore.load(from: sigURL).map(\.label) == ["Primary"])
+
+        let srcPDFData = try Data(contentsOf: twoColURL)
+        let stampedData = try PDFSigner.flattenStamps(
+            [
+                PDFStampPlacement(
+                    pageIndex: 0,
+                    normalizedRect: CodableRect(x: 0.25, y: 0.70, width: 0.35, height: 0.10),
+                    kind: .signature(sig)
+                ),
+                PDFStampPlacement(
+                    pageIndex: 0,
+                    normalizedRect: CodableRect(x: 0.25, y: 0.84, width: 0.25, height: 0.05),
+                    kind: .text("24 Nov 2026", .navy)
+                ),
+            ],
+            onto: srcPDFData
+        )
+        let signedDoc = try #require(PDFDocument(data: stampedData))
+        let signedPage = try #require(signedDoc.page(at: 0))
+        let pageText = signedPage.string ?? ""
+        #expect(pageText.contains("Left column line"))
+        #expect(pageText.contains("24 Nov 2026"))
+
+        // Render flattened signature region and verify blue ink pixels exist
+        let renderW = 612
+        let renderH = 792
+        var rgba = [UInt8](repeating: 255, count: renderW * renderH * 4)
+        let renderedOk: Bool = rgba.withUnsafeMutableBytes { buf in
+            guard let base = buf.baseAddress,
+                  let bmp = CGContext(
+                      data: base,
+                      width: renderW,
+                      height: renderH,
+                      bitsPerComponent: 8,
+                      bytesPerRow: renderW * 4,
+                      space: CGColorSpaceCreateDeviceRGB(),
+                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                  ) else { return false }
+            bmp.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
+            bmp.fill(CGRect(x: 0, y: 0, width: renderW, height: renderH))
+            signedPage.draw(with: .cropBox, to: bmp)
+            return true
+        }
+        #expect(renderedOk)
+        // Expected visual top-left y in 0.70...0.80 -> pixel rows ~554...634, cols ~153...367
+        var blueInkHits = 0
+        for row in 550..<638 {
+            for col in 150..<370 {
+                let off = (row * renderW + col) * 4
+                let r = Int(rgba[off])
+                let g = Int(rgba[off + 1])
+                let b = Int(rgba[off + 2])
+                if b > r + 20 && g < 160 && b > 50 {
+                    blueInkHits += 1
+                }
+            }
+        }
+        #expect(blueInkHits > 30)
+
+        // 5. Quick Open does not persist into library store until promoted, and supports search + jump history
+        let dbTmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("quick-open-vm-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dbTmp) }
+        try FileManager.default.createDirectory(at: dbTmp, withIntermediateDirectories: true)
+        let store = try ReaderStore(dbPath: dbTmp.appendingPathComponent("vm.sqlite").path, cacheRoot: dbTmp)
+        let vm = ReaderViewModel(
+            store: store,
+            defaults: UserDefaults(suiteName: "cohort-pdf-vm-\(UUID().uuidString)")!,
+            signatureStoreURL: sigURL
+        )
+        await vm.bootstrap(loadSampleBook: false, runNetworkSync: false)
+        await vm.quickOpenExternalFile(from: wideMarginURL)
+        #expect(vm.activeTabIsQuickOpen == true)
+        #expect(vm.openTabs.count == 1)
+        #expect((try await store.listBooks()).contains(where: { $0.id == vm.activeBook?.id }) == false)
+
+        await vm.runPDFSearchNow(query: "Bayesian")
+        #expect(!vm.inBookMatches.isEmpty)
+        await vm.selectPDFPage(1, recordJump: true)
+        #expect(vm.pdfJumpBackStack == [0])
+        await vm.jumpBackInPDF()
+        #expect(vm.activePDFPageIndex == 0)
+        #expect(vm.pdfJumpForwardStack == [1])
+    }
 }
 
 private final class MockManifoldURLProtocol: URLProtocol, @unchecked Sendable {

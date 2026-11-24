@@ -9,6 +9,23 @@ import ReaderModel
 import ReaderStorage
 import SwiftUI
 
+import UniformTypeIdentifiers
+#if canImport(AppKit)
+import AppKit
+#endif
+
+public struct OpenReaderTab: Identifiable, Sendable, Hashable {
+    public var id: String
+    public var book: BookItem
+    public var isTemporaryQuickOpen: Bool
+
+    public init(id: String? = nil, book: BookItem, isTemporaryQuickOpen: Bool = false) {
+        self.id = id ?? book.id
+        self.book = book
+        self.isTemporaryQuickOpen = isTemporaryQuickOpen
+    }
+}
+
 public struct InBookSearchHit: Identifiable, Sendable, Hashable {
     public var id: String
     public var spineIndex: Int
@@ -46,6 +63,7 @@ public enum ActiveReaderSheet: Identifiable, Sendable {
     case cohortDraft(CohortCardDraft)
     case toc
     case typography
+    case pdfSign
 
     public var id: String {
         switch self {
@@ -55,6 +73,7 @@ public enum ActiveReaderSheet: Identifiable, Sendable {
         case .cohortDraft(let draft): return "cohort:\(draft.sourceBookId):\(draft.quote.prefix(24))"
         case .toc: return "toc"
         case .typography: return "typography"
+        case .pdfSign: return "pdf-sign"
         }
     }
 }
@@ -105,7 +124,8 @@ public final class ReaderViewModel {
     public var autoDownloadActiveTitle: String?
     public var autoDownloadedCount: Int = 0
 
-    // Active Reader Session
+    // Active Reader Session & Multi-Document Tabs
+    public var openTabs: [OpenReaderTab] = []
     public var activeBook: BookItem?
     public var activeEPUB: EPUBDocument?
     public var activeEPUBSpineIndex: Int = 0
@@ -126,6 +146,36 @@ public final class ReaderViewModel {
     public var isImporterPresented: Bool = false
     public var lastHandoffMessage: String?
 
+    // Lightweight PDF Reader & Vector Signing
+    public var pdfAppearance: PDFPaperAppearance = .auto
+    public var pdfAutoCropEnabled: Bool = false
+    public var pdfTwoColumnMode: Bool = false
+    public var pdfTwoColumnStep: Int = 0
+    public var pdfDetectedColumnCount: Int = 1
+    public var pdfZoomScale: Double = 1.0
+    public var pdfJumpBackStack: [Int] = []
+    public var pdfJumpForwardStack: [Int] = []
+    public var activePDFSearchHighlight: String?
+    public var activePDFPageFrame: CGRect = .zero
+
+    public var savedSignatures: [SavedSignature] = []
+    public var signatureDraftStrokes: [[SignaturePoint]] = []
+    public var signatureDraftCurrentStroke: [SignaturePoint] = []
+    public var signatureDraftInk: SignatureInkColor = .navy
+    public var signatureDraftTypedText: String = ""
+    public var signatureDraftMode: Int = 0
+    public var signatureDraftCustomText: String = ""
+    public var pendingPDFStamps: [PDFStampPlacement] = []
+    public var selectedStampId: String?
+    public var stampDragOriginRect: CodableRect?
+    public var stampResizeOriginRect: CodableRect?
+    public var isExportingSignedPDF: Bool = false
+    public var exportedSignedPDFData: Data?
+    public var exportedSignedFilename: String = "document-signed.pdf"
+    public var lastSignedSavePath: String?
+    public var localLibraryMirrorPath: String = ""
+    public var signatureStoreURL: URL?
+
     // Search
     public var searchQuery: String = ""
     public var searchScope: SearchScope = .all
@@ -142,13 +192,17 @@ public final class ReaderViewModel {
     private var readingStartAt: Date = Date()
     private var autoDownloadTask: Task<Void, Never>?
     private var openBookTask: Task<Void, Never>?
+    private var pdfSearchTask: Task<Void, Never>?
     private var openBookGeneration: Int = 0
     private var manifoldSyncedOnce: Bool = false
     private var allowBackgroundSync: Bool = true
+    private var quickOpenScopedURLs: [String: URL] = [:]
+    private var localMirrorScopedURL: URL?
 
-    public init(store: ReaderStore, defaults: UserDefaults = .standard) {
+    public init(store: ReaderStore, defaults: UserDefaults = .standard, signatureStoreURL: URL? = SignatureStore.defaultURL()) {
         self.store = store
         self.defaults = defaults
+        self.signatureStoreURL = signatureStoreURL
         let savedHub = defaults.string(forKey: "cohortReader.manifoldHub") ?? ManifoldReaderClient.defaultHub
         let plistServer = (Bundle.main.object(forInfoDictionaryKey: "CohortReaderDefaultServer") as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let savedServer = defaults.string(forKey: "cohortReader.serverURL") ?? plistServer
@@ -168,6 +222,28 @@ public final class ReaderViewModel {
            let parsedSort = ShelfSortOrder(rawValue: rawSort) {
             self.shelfSortOrder = parsedSort
         }
+        if let rawAppearance = defaults.string(forKey: "cohortReader.pdfAppearance"),
+           let parsedAppearance = PDFPaperAppearance(rawValue: rawAppearance) {
+            self.pdfAppearance = parsedAppearance
+        }
+        self.pdfAutoCropEnabled = defaults.bool(forKey: "cohortReader.pdfAutoCropEnabled")
+        self.savedSignatures = SignatureStore.load(from: signatureStoreURL)
+        #if os(macOS)
+        if let bmData = defaults.data(forKey: "cohortReader.localMirrorBookmark") {
+            var stale = false
+            if let resolved = try? URL(
+                resolvingBookmarkData: bmData,
+                options: [.withSecurityScope],
+                relativeTo: nil,
+                bookmarkDataIsStale: &stale
+            ) {
+                if resolved.startAccessingSecurityScopedResource() {
+                    self.localMirrorScopedURL = resolved
+                }
+                self.localLibraryMirrorPath = resolved.path
+            }
+        }
+        #endif
         self.manifoldHubURL = savedHub
         self.serverURL = savedServer
         if !savedServer.isEmpty {
@@ -180,6 +256,8 @@ public final class ReaderViewModel {
         defaults.set(autoDownloadBudgetMB, forKey: "cohortReader.autoDownloadBudgetMB")
         defaults.set(shelfUsesListLayout, forKey: "cohortReader.shelfUsesListLayout")
         defaults.set(shelfSortOrder.rawValue, forKey: "cohortReader.shelfSortOrder")
+        defaults.set(pdfAppearance.rawValue, forKey: "cohortReader.pdfAppearance")
+        defaults.set(pdfAutoCropEnabled, forKey: "cohortReader.pdfAutoCropEnabled")
     }
 
     public func bootstrap(loadSampleBook: Bool = true, runNetworkSync: Bool = true) async {
@@ -570,6 +648,196 @@ public final class ReaderViewModel {
 
     // MARK: - Open & Read
 
+    public var activeTabIsQuickOpen: Bool {
+        guard let activeId = activeBook?.id else { return false }
+        return openTabs.first(where: { $0.id == activeId })?.isTemporaryQuickOpen == true
+    }
+
+    private func upsertOpenTab(for book: BookItem, isTemporaryQuickOpen: Bool? = nil) {
+        if let idx = openTabs.firstIndex(where: { $0.id == book.id }) {
+            let temp = isTemporaryQuickOpen ?? openTabs[idx].isTemporaryQuickOpen
+            openTabs[idx] = OpenReaderTab(id: book.id, book: book, isTemporaryQuickOpen: temp)
+        } else {
+            openTabs.append(OpenReaderTab(id: book.id, book: book, isTemporaryQuickOpen: isTemporaryQuickOpen ?? false))
+        }
+    }
+
+    public func localMirrorFileURL(for book: BookItem) -> URL? {
+        guard !localLibraryMirrorPath.isEmpty else { return nil }
+        let root = URL(fileURLWithPath: localLibraryMirrorPath, isDirectory: true)
+        let subdirs: [String] = (book.format == .epub) ? ["books"] : ["pdfs", "papers"]
+        let ext = (book.format == .epub) ? "epub" : "pdf"
+        for sub in subdirs {
+            let candidate = root.appendingPathComponent(sub, isDirectory: true)
+                .appendingPathComponent("\(book.id).\(ext)")
+            if FileManager.default.isReadableFile(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    #if os(macOS)
+    public func setLocalLibraryMirror(url: URL) {
+        localMirrorScopedURL?.stopAccessingSecurityScopedResource()
+        localMirrorScopedURL = nil
+        if let bm = try? url.bookmarkData(
+            options: [.withSecurityScope],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        ) {
+            defaults.set(bm, forKey: "cohortReader.localMirrorBookmark")
+        }
+        if url.startAccessingSecurityScopedResource() {
+            localMirrorScopedURL = url
+        }
+        localLibraryMirrorPath = url.path
+    }
+
+    public func clearLocalLibraryMirror() {
+        localMirrorScopedURL?.stopAccessingSecurityScopedResource()
+        localMirrorScopedURL = nil
+        defaults.removeObject(forKey: "cohortReader.localMirrorBookmark")
+        localLibraryMirrorPath = ""
+    }
+
+    public func chooseLocalLibraryMirrorWithPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Link Mirror"
+        panel.message = "Choose your local PaperLibrary folder so the Mac app opens owned books and PDFs directly from disk."
+        if panel.runModal() == .OK, let url = panel.url {
+            setLocalLibraryMirror(url: url)
+        }
+    }
+
+    public func openExternalFileWithPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        var types: [UTType] = [.pdf]
+        if let epub = UTType(filenameExtension: "epub") { types.append(epub) }
+        panel.allowedContentTypes = types
+        panel.prompt = "Open"
+        if panel.runModal() == .OK, let url = panel.url {
+            Task { await self.quickOpenExternalFile(from: url) }
+        }
+    }
+    #endif
+
+    public func quickOpenExternalFile(from url: URL) async {
+        let accessed = url.startAccessingSecurityScopedResource()
+        let ext = url.pathExtension.lowercased()
+        let isPDF = ext != "epub"
+        let format: BookFormat = isPDF ? .pdf : .epub
+        let id = "quick-\(abs(url.path.hashValue))"
+        let fallbackTitle = url.deletingPathExtension().lastPathComponent
+
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+        var title = fallbackTitle
+        var author = "Quick Open"
+        var canonicalId: String?
+        var summary = ""
+
+        if isPDF {
+            let meta = await Task.detached(priority: .userInitiated) {
+                PDFInspector.inspect(url: url)
+            }.value
+            if let meta {
+                title = meta.title
+                author = meta.author
+                canonicalId = meta.canonicalId
+                summary = String(meta.frontMatterText.prefix(240))
+            }
+        } else {
+            let doc = try? await Task.detached(priority: .userInitiated) {
+                try EPUBParser.parse(url: url)
+            }.value
+            if let doc {
+                title = doc.title
+                author = doc.author
+                canonicalId = doc.canonicalId
+            }
+        }
+
+        if accessed {
+            quickOpenScopedURLs[id]?.stopAccessingSecurityScopedResource()
+            quickOpenScopedURLs[id] = url
+        }
+
+        let quickBook = BookItem(
+            id: id,
+            canonicalId: canonicalId,
+            title: title,
+            author: author,
+            format: format,
+            source: .localImport,
+            genre: isPDF ? "PDF Document" : "EPUB",
+            summary: summary,
+            shelfNames: [],
+            bytes: fileSize,
+            isOfflineCached: true,
+            localFilePath: url.path,
+            lastOpenedAt: Date()
+        )
+        upsertOpenTab(for: quickBook, isTemporaryQuickOpen: true)
+        await openBook(quickBook, switchTab: true)
+    }
+
+    public func promoteActiveQuickOpenToLibrary() async {
+        guard let book = activeBook,
+              activeTabIsQuickOpen,
+              let path = book.localFilePath else { return }
+        let tempId = book.id
+        await importLocalFile(from: URL(fileURLWithPath: path))
+        if activeBook?.id != tempId {
+            openTabs.removeAll { $0.id == tempId }
+            quickOpenScopedURLs.removeValue(forKey: tempId)?.stopAccessingSecurityScopedResource()
+        }
+    }
+
+    public func selectTab(id: String) async {
+        guard let tab = openTabs.first(where: { $0.id == id }) else { return }
+        if activeBook?.id == tab.book.id {
+            selectedTab = .read
+            return
+        }
+        await openBook(tab.book, switchTab: true)
+    }
+
+    public func closeTab(id: String) async {
+        let wasActive = activeBook?.id == id
+        let idx = openTabs.firstIndex(where: { $0.id == id })
+        openTabs.removeAll { $0.id == id }
+        quickOpenScopedURLs.removeValue(forKey: id)?.stopAccessingSecurityScopedResource()
+
+        guard wasActive else { return }
+        openBookGeneration += 1
+        openBookTask?.cancel()
+        openBookTask = nil
+        openingBookId = nil
+        pdfSearchTask?.cancel()
+        pendingPDFStamps = []
+        selectedStampId = nil
+        pdfJumpBackStack = []
+        pdfJumpForwardStack = []
+        activePDFSearchHighlight = nil
+
+        if !openTabs.isEmpty {
+            let nextIdx = min(idx ?? 0, openTabs.count - 1)
+            await openBook(openTabs[nextIdx].book, switchTab: true)
+        } else {
+            activeBook = nil
+            activeEPUB = nil
+            activePDFURL = nil
+            activePDFMetadata = nil
+            selectedTab = .shelf
+        }
+    }
+
     public func cancelActiveOpen() {
         openBookGeneration += 1
         openBookTask?.cancel()
@@ -584,6 +852,7 @@ public final class ReaderViewModel {
         autoDownloadTask?.cancel()
         autoDownloadActiveTitle = nil
         openBookTask?.cancel()
+        pdfSearchTask?.cancel()
         openBookGeneration += 1
         let generation = openBookGeneration
 
@@ -592,14 +861,27 @@ public final class ReaderViewModel {
         isReaderChromeHidden = false
         activeSelectionText = ""
         activeBook = book
+        upsertOpenTab(for: book)
         activeEPUB = nil
         activePDFURL = nil
         activePDFMetadata = nil
+        pendingPDFStamps = []
+        selectedStampId = nil
+        pdfJumpBackStack = []
+        pdfJumpForwardStack = []
+        activePDFSearchHighlight = nil
+        pdfZoomScale = 1.0
+        pdfTwoColumnMode = false
+        pdfTwoColumnStep = 0
+        pdfDetectedColumnCount = 1
+        activePDFPageFrame = .zero
         openingBookId = book.id
         if switchTab {
             selectedTab = .read
         }
-        defaults.set(book.id, forKey: "cohortReader.lastBookId")
+        if !activeTabIsQuickOpen {
+            defaults.set(book.id, forKey: "cohortReader.lastBookId")
+        }
         activeHighlights = (try? await store.listHighlights(bookId: book.id)) ?? []
         activeNotes = (try? await store.loadMarginNotes(bookId: book.id)) ?? []
         tocSearchQuery = ""
@@ -626,6 +908,8 @@ public final class ReaderViewModel {
             if let localPath = book.localFilePath, FileManager.default.fileExists(atPath: localPath) {
                 let url = URL(fileURLWithPath: localPath)
                 await self.loadLocalDocument(url: url, book: book, generation: generation)
+            } else if let mirrorURL = self.localMirrorFileURL(for: book) {
+                await self.loadLocalDocument(url: mirrorURL, book: book, generation: generation)
             } else if book.source == .homeServer && self.isServerConnected {
                 await self.downloadForOffline(book, forceImmediate: true)
                 guard !Task.isCancelled, self.openBookGeneration == generation else { return }
@@ -667,11 +951,12 @@ public final class ReaderViewModel {
 
     public func saveQuickHighlight(quote: String, note: String = "") async {
         guard let book = activeBook else { return }
+        let pageOrSpine = activePDFURL != nil ? activePDFPageIndex : activeEPUBSpineIndex
         let highlight = ReadingHighlight(
             bookId: book.id,
             canonicalId: book.canonicalId,
             bookTitle: book.title,
-            spine: activeEPUBSpineIndex,
+            spine: pageOrSpine,
             quote: quote,
             note: note,
             sentToCohort: false
@@ -689,6 +974,20 @@ public final class ReaderViewModel {
 
     public func runInBookSearch() {
         let q = tocSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        pdfSearchTask?.cancel()
+        if let pdfURL = activePDFURL, activeEPUB == nil {
+            guard q.count >= 2 else {
+                inBookMatches = []
+                activePDFSearchHighlight = nil
+                return
+            }
+            activePDFSearchHighlight = q
+            pdfSearchTask = Task {
+                await self.runPDFSearchNow(url: pdfURL, query: q)
+            }
+            return
+        }
+
         guard q.count >= 2, let doc = activeEPUB else {
             inBookMatches = []
             return
@@ -720,6 +1019,28 @@ public final class ReaderViewModel {
             if results.count >= 30 { break }
         }
         inBookMatches = results
+    }
+
+    public func runPDFSearchNow(url: URL? = nil, query: String? = nil) async {
+        let q = (query ?? tocSearchQuery).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 2, let targetURL = url ?? activePDFURL else {
+            inBookMatches = []
+            activePDFSearchHighlight = nil
+            return
+        }
+        activePDFSearchHighlight = q
+        let matches = await Task.detached(priority: .userInitiated) {
+            PDFSearch.search(url: targetURL, query: q, limit: 40)
+        }.value
+        guard !Task.isCancelled else { return }
+        inBookMatches = matches.map {
+            InBookSearchHit(
+                id: $0.id,
+                spineIndex: $0.pageIndex,
+                chapterTitle: "Page \($0.pageIndex + 1)",
+                snippet: $0.snippet
+            )
+        }
     }
 
     public func estimatedChapterMinutesRemaining() -> Int? {
@@ -811,13 +1132,267 @@ public final class ReaderViewModel {
         await recordProgress(spine: index, fraction: 0, wordOffset: 0, pageIndex: nil)
     }
 
-    public func selectPDFPage(_ pageIndex: Int) async {
+    public func selectPDFPage(_ pageIndex: Int, recordJump: Bool = false) async {
         guard let meta = activePDFMetadata, meta.pageCount > 0 else { return }
         let clamped = min(max(pageIndex, 0), meta.pageCount - 1)
+        if clamped != activePDFPageIndex {
+            if recordJump || abs(clamped - activePDFPageIndex) > 1 {
+                pdfJumpBackStack.append(activePDFPageIndex)
+                if pdfJumpBackStack.count > 30 {
+                    pdfJumpBackStack.removeFirst(pdfJumpBackStack.count - 30)
+                }
+                pdfJumpForwardStack = []
+            }
+        }
         activePDFPageIndex = clamped
+        pdfTwoColumnStep = 0
         let frac = PDFInspector.fraction(forPage: clamped, pageCount: meta.pageCount)
         await recordProgress(spine: clamped, fraction: frac, wordOffset: nil, pageIndex: clamped)
     }
+
+    public func jumpBackInPDF() async {
+        guard let prev = pdfJumpBackStack.popLast(),
+              let meta = activePDFMetadata, meta.pageCount > 0 else { return }
+        pdfJumpForwardStack.append(activePDFPageIndex)
+        let clamped = min(max(prev, 0), meta.pageCount - 1)
+        activePDFPageIndex = clamped
+        pdfTwoColumnStep = 0
+        let frac = PDFInspector.fraction(forPage: clamped, pageCount: meta.pageCount)
+        await recordProgress(spine: clamped, fraction: frac, wordOffset: nil, pageIndex: clamped)
+    }
+
+    public func jumpForwardInPDF() async {
+        guard let next = pdfJumpForwardStack.popLast(),
+              let meta = activePDFMetadata, meta.pageCount > 0 else { return }
+        pdfJumpBackStack.append(activePDFPageIndex)
+        let clamped = min(max(next, 0), meta.pageCount - 1)
+        activePDFPageIndex = clamped
+        pdfTwoColumnStep = 0
+        let frac = PDFInspector.fraction(forPage: clamped, pageCount: meta.pageCount)
+        await recordProgress(spine: clamped, fraction: frac, wordOffset: nil, pageIndex: clamped)
+    }
+
+    public func stepPDFColumn(delta: Int) async {
+        guard let meta = activePDFMetadata, meta.pageCount > 0 else { return }
+        if !pdfTwoColumnMode || pdfDetectedColumnCount < 2 {
+            await selectPDFPage(activePDFPageIndex + delta)
+            return
+        }
+        if delta > 0 {
+            if pdfTwoColumnStep == 0 {
+                pdfTwoColumnStep = 1
+            } else if activePDFPageIndex + 1 < meta.pageCount {
+                await selectPDFPage(activePDFPageIndex + 1)
+                pdfTwoColumnStep = 0
+            }
+        } else if delta < 0 {
+            if pdfTwoColumnStep == 1 {
+                pdfTwoColumnStep = 0
+            } else if activePDFPageIndex > 0 {
+                await selectPDFPage(activePDFPageIndex - 1)
+                pdfTwoColumnStep = 1
+            }
+        }
+    }
+
+    public func zoomInPDF() {
+        pdfZoomScale = min(3.0, pdfZoomScale + 0.2)
+    }
+
+    public func zoomOutPDF() {
+        pdfZoomScale = max(0.5, pdfZoomScale - 0.2)
+    }
+
+    public func resetPDFZoom() {
+        pdfZoomScale = 1.0
+    }
+
+    public func setPDFAppearance(_ appearance: PDFPaperAppearance) {
+        pdfAppearance = appearance
+        savePreferences()
+    }
+
+    public func cyclePDFAppearance() {
+        let all = PDFPaperAppearance.allCases
+        if let idx = all.firstIndex(of: pdfAppearance) {
+            pdfAppearance = all[(idx + 1) % all.count]
+        } else {
+            pdfAppearance = .auto
+        }
+        savePreferences()
+    }
+
+    public func togglePDFAutoCrop() {
+        pdfAutoCropEnabled.toggle()
+        savePreferences()
+    }
+
+    // MARK: - Lightweight Vector PDF Signing
+
+    public func commitDraftStroke() {
+        guard !signatureDraftCurrentStroke.isEmpty else { return }
+        signatureDraftStrokes.append(signatureDraftCurrentStroke)
+        signatureDraftCurrentStroke = []
+    }
+
+    public func undoDraftStroke() {
+        if !signatureDraftStrokes.isEmpty {
+            _ = signatureDraftStrokes.popLast()
+        }
+    }
+
+    public func clearDraftSignature() {
+        signatureDraftStrokes = []
+        signatureDraftCurrentStroke = []
+        signatureDraftTypedText = ""
+    }
+
+    public func saveAndPlaceDraftSignature() {
+        let created: SavedSignature
+        if signatureDraftMode == 1 {
+            let trimmed = signatureDraftTypedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            created = SavedSignature(
+                label: trimmed,
+                strokes: [],
+                typedText: trimmed,
+                inkColor: signatureDraftInk,
+                aspectRatio: max(1.8, min(4.2, Double(trimmed.count) * 0.32))
+            )
+        } else {
+            var allStrokes = signatureDraftStrokes
+            if !signatureDraftCurrentStroke.isEmpty {
+                allStrokes.append(signatureDraftCurrentStroke)
+            }
+            guard !allStrokes.isEmpty else { return }
+            created = SavedSignature(
+                label: "Signature \(savedSignatures.count + 1)",
+                strokes: allStrokes,
+                typedText: nil,
+                inkColor: signatureDraftInk,
+                aspectRatio: 2.6
+            )
+        }
+        savedSignatures.insert(created, at: 0)
+        try? SignatureStore.save(savedSignatures, to: signatureStoreURL)
+        clearDraftSignature()
+        placeSavedSignature(created)
+        activeSheet = nil
+    }
+
+    public func placeSavedSignature(_ sig: SavedSignature) {
+        let width = 0.34
+        let height = min(0.22, max(0.075, width / sig.aspectRatio * 0.95))
+        let offset = Double(pendingPDFStamps.filter { $0.pageIndex == activePDFPageIndex }.count % 4) * 0.03
+        let stamp = PDFStampPlacement(
+            pageIndex: activePDFPageIndex,
+            normalizedRect: CodableRect(
+                x: min(0.62, 0.30 + offset),
+                y: min(0.76, 0.64 + offset),
+                width: width,
+                height: height
+            ),
+            kind: .signature(sig)
+        )
+        pendingPDFStamps.append(stamp)
+        selectedStampId = stamp.id
+        activeSheet = nil
+    }
+
+    public func placeQuickTextStamp(_ text: String) {
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        let width = min(0.42, max(0.14, Double(clean.count) * 0.019 + 0.06))
+        let offset = Double(pendingPDFStamps.filter { $0.pageIndex == activePDFPageIndex }.count % 4) * 0.025
+        let stamp = PDFStampPlacement(
+            pageIndex: activePDFPageIndex,
+            normalizedRect: CodableRect(
+                x: min(0.55, 0.32 + offset),
+                y: min(0.84, 0.77 + offset),
+                width: width,
+                height: 0.052
+            ),
+            kind: .text(clean, signatureDraftInk)
+        )
+        pendingPDFStamps.append(stamp)
+        selectedStampId = stamp.id
+        activeSheet = nil
+    }
+
+    public func deleteSavedSignature(id: String) {
+        savedSignatures.removeAll { $0.id == id }
+        try? SignatureStore.save(savedSignatures, to: signatureStoreURL)
+    }
+
+    public func updatePendingStamp(id: String, normalizedRect: CodableRect) {
+        guard let idx = pendingPDFStamps.firstIndex(where: { $0.id == id }) else { return }
+        let w = min(max(normalizedRect.width, 0.08), 0.92)
+        let h = min(max(normalizedRect.height, 0.035), 0.65)
+        let x = min(max(normalizedRect.x, 0.01), max(0.01, 0.99 - w))
+        let y = min(max(normalizedRect.y, 0.01), max(0.01, 0.99 - h))
+        pendingPDFStamps[idx].normalizedRect = CodableRect(x: x, y: y, width: w, height: h)
+    }
+
+    public func removePendingStamp(id: String) {
+        pendingPDFStamps.removeAll { $0.id == id }
+        if selectedStampId == id { selectedStampId = nil }
+    }
+
+    public func clearPendingStamps() {
+        pendingPDFStamps = []
+        selectedStampId = nil
+        stampDragOriginRect = nil
+        stampResizeOriginRect = nil
+    }
+
+    public static func suggestedSignedFilename(for book: BookItem?, url: URL) -> String {
+        let base = url.deletingPathExtension().lastPathComponent
+        let raw = (book?.title.isEmpty == false) ? book!.title : base
+        let cleaned = raw
+            .replacingOccurrences(of: #"[^A-Za-z0-9._ -]+"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let stem = cleaned.isEmpty ? "document" : String(cleaned.prefix(64))
+        return stem.hasSuffix("-signed") ? "\(stem).pdf" : "\(stem)-signed.pdf"
+    }
+
+    public func prepareSignedPDFExport() async -> Data? {
+        guard let sourceURL = activePDFURL, !pendingPDFStamps.isEmpty else { return nil }
+        let stamps = pendingPDFStamps
+        do {
+            let data = try await Task.detached(priority: .userInitiated) {
+                let raw = try Data(contentsOf: sourceURL)
+                return try PDFSigner.flattenStamps(stamps, onto: raw)
+            }.value
+            exportedSignedPDFData = data
+            exportedSignedFilename = Self.suggestedSignedFilename(for: activeBook, url: sourceURL)
+            return data
+        } catch {
+            bannerError = "Could not sign PDF: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    #if os(macOS)
+    public func saveSignedPDFWithPanel() async {
+        guard let data = await prepareSignedPDFExport(),
+              let sourceURL = activePDFURL else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = exportedSignedFilename
+        panel.directoryURL = sourceURL.deletingLastPathComponent()
+        if panel.runModal() == .OK, let dest = panel.url {
+            do {
+                try data.write(to: dest, options: .atomic)
+                lastSignedSavePath = dest.path
+                lastHandoffMessage = "Saved signed PDF: \(dest.lastPathComponent)"
+                clearPendingStamps()
+            } catch {
+                bannerError = "Failed to save signed PDF: \(error.localizedDescription)"
+            }
+        }
+    }
+    #endif
 
     public func recordProgress(spine: Int, fraction: Double, wordOffset: Int?, pageIndex: Int?) async {
         guard var book = activeBook else { return }
@@ -1052,12 +1627,13 @@ public final class ReaderViewModel {
             bookId: book.id,
             canonicalId: book.canonicalId,
             bookTitle: book.title,
-            spine: activeEPUBSpineIndex,
+            spine: activePDFURL != nil ? activePDFPageIndex : activeEPUBSpineIndex,
             quote: draft.quote,
             note: note,
             sentToCohort: true
         )
         try? await store.saveHighlight(highlight)
+        activeHighlights = (try? await store.listHighlights(bookId: book.id)) ?? activeHighlights
         activeSheet = nil
 
         if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {

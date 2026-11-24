@@ -24,7 +24,42 @@ public struct ReaderPaneView: View {
         let chromeBg = ReaderPalette.themeSurface(activeTheme)
         let chromeFg = ReaderPalette.themeForeground(activeTheme)
 
+        let isPDFActive = vm.activePDFURL != nil || (vm.activeBook?.format == .pdf || vm.activeBook?.format == .article)
+        #if os(macOS)
+        let showTabStrip = (!vm.isReaderChromeHidden || isSnapshot) && !vm.openTabs.isEmpty
+        #else
+        let showTabStrip = (!vm.isReaderChromeHidden || isSnapshot) && vm.openTabs.count > 1
+        #endif
+
         VStack(spacing: 0) {
+            if showTabStrip {
+                openTabsStrip(chromeBg: chromeBg, chromeFg: chromeFg)
+            }
+
+            if (!vm.isReaderChromeHidden || isSnapshot) && vm.activeTabIsQuickOpen {
+                HStack(spacing: 8) {
+                    Image(systemName: "bolt.doc")
+                        .font(.system(size: 11))
+                        .foregroundStyle(ReaderPalette.accent)
+                    Text("Quick Open · local file")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(chromeFg.opacity(0.75))
+                    Spacer()
+                    Button {
+                        Task { await vm.promoteActiveQuickOpenToLibrary() }
+                    } label: {
+                        Text("Save to Library")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(ReaderPalette.accent)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .background(ReaderPalette.surface.opacity(0.85))
+                Divider()
+            }
+
             if !vm.isReaderChromeHidden || isSnapshot {
                 // Top Reader Bar
                 HStack(spacing: 6) {
@@ -38,10 +73,12 @@ public struct ReaderPaneView: View {
                                 .font(.system(size: 13, weight: .semibold))
                             Text("Library")
                                 .font(.system(size: 13, weight: .medium))
+                                .lineLimit(1)
                         }
+                        .fixedSize(horizontal: true, vertical: false)
                         .foregroundStyle(ReaderPalette.accent)
                         .padding(.vertical, 4)
-                        .padding(.trailing, 4)
+                        .padding(.trailing, 2)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Back to Library")
@@ -52,7 +89,7 @@ public struct ReaderPaneView: View {
                         Image(systemName: "list.bullet")
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(chromeFg)
-                            .padding(6)
+                            .padding(5)
                     }
                     .buttonStyle(.plain)
                     .disabled(vm.activeBook == nil)
@@ -72,34 +109,132 @@ public struct ReaderPaneView: View {
                                 .help(sub)
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(minWidth: 64, maxWidth: .infinity, alignment: .leading)
 
                     if vm.activeBook != nil {
-                        Button {
-                            let sampleQuote = vm.activeSelectionText.isEmpty
-                                ? (vm.currentChapter()?.plainText.split(separator: ".").first.map(String.init) ?? vm.activeBook?.summary ?? "")
-                                : vm.activeSelectionText
-                            vm.prepareCohortDraft(quote: sampleQuote)
-                        } label: {
-                            Image(systemName: "rectangle.badge.plus")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(chromeFg)
-                                .padding(6)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Send passage to Cohort")
+                        if isPDFActive {
+                            Button {
+                                ReaderHaptics.selection()
+                                vm.togglePDFAutoCrop()
+                            } label: {
+                                Image(systemName: "crop")
+                                    .font(.system(size: 13.5, weight: .medium))
+                                    .foregroundStyle(vm.pdfAutoCropEnabled ? ReaderPalette.accent : chromeFg)
+                                    .padding(5)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Crop Margins")
+                            .help("Trim wide PDF margins")
 
-                        Button {
-                            vm.activeSheet = .typography
-                        } label: {
-                            Text("Aa")
-                                .font(.system(size: 13, weight: .semibold, design: .serif))
-                                .foregroundStyle(chromeFg)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 4)
+                            if isSnapshot {
+                                Image(systemName: vm.pdfAppearance.symbol)
+                                    .font(.system(size: 13.5, weight: .medium))
+                                    .foregroundStyle(vm.pdfAppearance == .auto ? chromeFg : ReaderPalette.accent)
+                                    .padding(5)
+                            } else {
+                                Menu {
+                                    Section("Paper Appearance") {
+                                        ForEach(PDFPaperAppearance.allCases, id: \.self) { mode in
+                                            Button {
+                                                ReaderHaptics.selection()
+                                                vm.setPDFAppearance(mode)
+                                            } label: {
+                                                if vm.pdfAppearance == mode {
+                                                    Label(mode.label, systemImage: "checkmark")
+                                                } else {
+                                                    Label(mode.label, systemImage: mode.symbol)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    #if os(macOS)
+                                    Section("Zoom") {
+                                        Button { vm.zoomInPDF() } label: {
+                                            Label("Zoom In", systemImage: "plus.magnifyingglass")
+                                        }
+                                        Button { vm.zoomOutPDF() } label: {
+                                            Label("Zoom Out", systemImage: "minus.magnifyingglass")
+                                        }
+                                        Button { vm.resetPDFZoom() } label: {
+                                            Label("Fit Page", systemImage: "arrow.up.left.and.arrow.down.right")
+                                        }
+                                    }
+                                    #endif
+                                } label: {
+                                    Image(systemName: vm.pdfAppearance.symbol)
+                                        .font(.system(size: 13.5, weight: .medium))
+                                        .foregroundStyle(vm.pdfAppearance == .auto ? chromeFg : ReaderPalette.accent)
+                                        .padding(5)
+                                }
+                                .menuStyle(.borderlessButton)
+                                .fixedSize()
+                                .accessibilityLabel("PDF Paper Theme & Zoom")
+                                .help("Paper Theme & Zoom")
+                            }
+
+                            if vm.pdfDetectedColumnCount > 1 || vm.pdfTwoColumnMode {
+                                Button {
+                                    ReaderHaptics.selection()
+                                    vm.pdfTwoColumnMode.toggle()
+                                    vm.pdfTwoColumnStep = 0
+                                } label: {
+                                    Image(systemName: "rectangle.split.2x1")
+                                        .font(.system(size: 13.5, weight: .medium))
+                                        .foregroundStyle(vm.pdfTwoColumnMode ? ReaderPalette.accent : chromeFg)
+                                        .padding(5)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Column Flow")
+                                .help("Step down academic columns")
+                            }
+
+                            Button {
+                                ReaderHaptics.light()
+                                vm.activeSheet = .pdfSign
+                            } label: {
+                                ZStack(alignment: .topTrailing) {
+                                    Image(systemName: "signature")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(vm.pendingPDFStamps.isEmpty ? chromeFg : ReaderPalette.accent)
+                                        .padding(6)
+                                    if !vm.pendingPDFStamps.isEmpty {
+                                        Circle()
+                                            .fill(ReaderPalette.cohortGreen)
+                                            .frame(width: 6, height: 6)
+                                            .offset(x: -2, y: 2)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Sign PDF")
+                            .help("Sign & Stamp PDF")
+                        } else {
+                            Button {
+                                let sampleQuote = vm.activeSelectionText.isEmpty
+                                    ? (vm.currentChapter()?.plainText.split(separator: ".").first.map(String.init) ?? vm.activeBook?.summary ?? "")
+                                    : vm.activeSelectionText
+                                vm.prepareCohortDraft(quote: sampleQuote)
+                            } label: {
+                                Image(systemName: "rectangle.badge.plus")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(chromeFg)
+                                    .padding(6)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Send passage to Cohort")
+
+                            Button {
+                                vm.activeSheet = .typography
+                            } label: {
+                                Text("Aa")
+                                    .font(.system(size: 13, weight: .semibold, design: .serif))
+                                    .foregroundStyle(chromeFg)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 4)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Typography")
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Typography")
 
                         Button {
                             ReaderHaptics.light()
@@ -195,22 +330,68 @@ public struct ReaderPaneView: View {
                     }
                 } else if let pdfURL = vm.activePDFURL {
                     if isSnapshot {
-                        SnapshotPDFReaderBody(book: vm.activeBook, metadata: vm.activePDFMetadata, pageIndex: vm.activePDFPageIndex)
-                    } else {
-                        PDFKitReaderView(
-                            url: pdfURL,
+                        SnapshotPDFReaderBody(
+                            book: vm.activeBook,
+                            metadata: vm.activePDFMetadata,
                             pageIndex: vm.activePDFPageIndex,
-                            theme: activeTheme,
-                            onPageChanged: { newPage in
-                                Task { await vm.selectPDFPage(newPage) }
-                            },
-                            onCenterTap: {
-                                ReaderHaptics.light()
-                                withAnimation(.easeInOut(duration: 0.18)) {
-                                    vm.isReaderChromeHidden.toggle()
-                                }
-                            }
+                            stamps: vm.pendingPDFStamps.filter { $0.pageIndex == vm.activePDFPageIndex }
                         )
+                    } else {
+                        let resolvedPaper: PDFPaperAppearance = {
+                            switch vm.pdfAppearance {
+                            case .auto:
+                                switch activeTheme {
+                                case .ink: return .night
+                                case .sepia: return .sepia
+                                case .paper, .auto: return .original
+                                }
+                            default:
+                                return vm.pdfAppearance
+                            }
+                        }()
+
+                        ZStack {
+                            PDFKitReaderView(
+                                url: pdfURL,
+                                pageIndex: vm.activePDFPageIndex,
+                                theme: activeTheme,
+                                autoCrop: vm.pdfAutoCropEnabled,
+                                twoColumnMode: vm.pdfTwoColumnMode,
+                                twoColumnStep: vm.pdfTwoColumnStep,
+                                zoomScale: vm.pdfZoomScale,
+                                highlights: vm.activeHighlights,
+                                searchHighlightQuery: vm.activePDFSearchHighlight,
+                                onPageChanged: { newPage in
+                                    Task { await vm.selectPDFPage(newPage) }
+                                },
+                                onSelectionChanged: { text in
+                                    vm.activeSelectionText = text
+                                },
+                                onColumnsDetected: { count in
+                                    vm.pdfDetectedColumnCount = count
+                                },
+                                onPageFrameChanged: { frame in
+                                    if abs(vm.activePDFPageFrame.minX - frame.minX) > 1
+                                        || abs(vm.activePDFPageFrame.minY - frame.minY) > 1
+                                        || abs(vm.activePDFPageFrame.width - frame.width) > 1
+                                        || abs(vm.activePDFPageFrame.height - frame.height) > 1 {
+                                        vm.activePDFPageFrame = frame
+                                    }
+                                },
+                                onCenterTap: {
+                                    ReaderHaptics.light()
+                                    withAnimation(.easeInOut(duration: 0.18)) {
+                                        vm.isReaderChromeHidden.toggle()
+                                    }
+                                }
+                            )
+                            .modifier(PDFPaperAppearanceModifier(appearance: resolvedPaper))
+
+                            let pageStamps = vm.pendingPDFStamps.filter { $0.pageIndex == vm.activePDFPageIndex }
+                            if !pageStamps.isEmpty {
+                                PDFStampOverlayView(vm: vm, stamps: pageStamps)
+                            }
+                        }
                     }
                 } else if let book = vm.activeBook {
                     if vm.openingBookId == book.id {
@@ -348,6 +529,44 @@ public struct ReaderPaneView: View {
                     .overlay(Capsule().stroke(ReaderPalette.hairline, lineWidth: 1))
                     .shadow(radius: 6, y: 2)
                     .padding(.bottom, 12)
+                } else if vm.activePDFURL != nil && !vm.pendingPDFStamps.isEmpty && !isSnapshot {
+                    PDFSigningActionBar(vm: vm)
+                        .padding(.bottom, 12)
+                } else if vm.activePDFURL != nil && !vm.pdfJumpBackStack.isEmpty && !isSnapshot {
+                    HStack(spacing: 8) {
+                        if let backPage = vm.pdfJumpBackStack.last {
+                            Button {
+                                ReaderHaptics.selection()
+                                Task { await vm.jumpBackInPDF() }
+                            } label: {
+                                Label("Back to p. \(backPage + 1)", systemImage: "arrow.uturn.backward")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(ReaderPalette.label)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .background(ReaderPalette.surface, in: Capsule())
+                                    .overlay(Capsule().stroke(ReaderPalette.hairline, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if let fwdPage = vm.pdfJumpForwardStack.last {
+                            Button {
+                                ReaderHaptics.selection()
+                                Task { await vm.jumpForwardInPDF() }
+                            } label: {
+                                Label("p. \(fwdPage + 1)", systemImage: "arrow.uturn.forward")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(ReaderPalette.secondary)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 7)
+                                    .background(ReaderPalette.surface, in: Capsule())
+                                    .overlay(Capsule().stroke(ReaderPalette.hairline, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .shadow(radius: 4, y: 2)
+                    .padding(.bottom, 12)
                 } else if vm.isReaderChromeHidden && !isSnapshot {
                     HStack {
                         Spacer()
@@ -382,6 +601,12 @@ public struct ReaderPaneView: View {
 
                 Divider()
                 VStack(spacing: 4) {
+                    if let scrubIdx = vm.scrubChapterTarget {
+                        Text(epub.chapter(at: scrubIdx)?.title ?? "Chapter \(scrubIdx + 1)")
+                            .font(.system(size: 11.5, weight: .medium, design: .serif))
+                            .foregroundStyle(chromeFg)
+                            .lineLimit(1)
+                    }
                     if !isSnapshot && epub.spineHrefs.count > 1 {
                         Slider(
                             value: Binding(
@@ -476,21 +701,28 @@ public struct ReaderPaneView: View {
                     HStack {
                         Button {
                             ReaderHaptics.selection()
-                            Task { await vm.selectPDFPage(vm.activePDFPageIndex - 1) }
+                            Task {
+                                if vm.pdfTwoColumnMode && vm.pdfDetectedColumnCount >= 2 {
+                                    await vm.stepPDFColumn(delta: -1)
+                                } else {
+                                    await vm.selectPDFPage(vm.activePDFPageIndex - 1)
+                                }
+                            }
                         } label: {
                             Label("Prev", systemImage: "chevron.left")
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(chromeFg)
                         }
                         .buttonStyle(.plain)
-                        .disabled(vm.activePDFPageIndex <= 0)
+                        .disabled(vm.activePDFPageIndex <= 0 && (!vm.pdfTwoColumnMode || vm.pdfTwoColumnStep == 0))
 
                         Spacer()
 
                         Button {
                             vm.activeSheet = .toc
                         } label: {
-                            Text("Page \(displayIdx + 1)/\(total) · \(vm.activeBook?.progressPercent ?? 0)%")
+                            let colBadge = (vm.pdfTwoColumnMode && vm.pdfDetectedColumnCount >= 2) ? " · Col \(vm.pdfTwoColumnStep + 1)/2" : ""
+                            Text("Page \(displayIdx + 1)/\(total)\(colBadge) · \(vm.activeBook?.progressPercent ?? 0)%")
                                 .font(.system(size: 11.5, design: .monospaced))
                                 .foregroundStyle(chromeFg.opacity(0.68))
                                 .monospacedDigit()
@@ -501,7 +733,13 @@ public struct ReaderPaneView: View {
 
                         Button {
                             ReaderHaptics.selection()
-                            Task { await vm.selectPDFPage(vm.activePDFPageIndex + 1) }
+                            Task {
+                                if vm.pdfTwoColumnMode && vm.pdfDetectedColumnCount >= 2 {
+                                    await vm.stepPDFColumn(delta: 1)
+                                } else {
+                                    await vm.selectPDFPage(vm.activePDFPageIndex + 1)
+                                }
+                            }
                         } label: {
                             HStack(spacing: 4) {
                                 Text("Next")
@@ -511,7 +749,7 @@ public struct ReaderPaneView: View {
                             .foregroundStyle(chromeFg)
                         }
                         .buttonStyle(.plain)
-                        .disabled(vm.activePDFPageIndex + 1 >= meta.pageCount)
+                        .disabled(vm.activePDFPageIndex + 1 >= meta.pageCount && (!vm.pdfTwoColumnMode || vm.pdfTwoColumnStep == 1))
                     }
                 }
                 .padding(.horizontal, 14)
@@ -532,6 +770,71 @@ public struct ReaderPaneView: View {
             return "Page \(vm.activePDFPageIndex + 1) of \(max(1, meta.pageCount))"
         }
         return vm.activeBook?.canonicalId
+    }
+
+    private func openTabsStrip(chromeBg: Color, chromeFg: Color) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(vm.openTabs) { tab in
+                    let active = vm.activeBook?.id == tab.id
+                    HStack(spacing: 5) {
+                        Button {
+                            Task { await vm.selectTab(id: tab.id) }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: tab.book.format == .epub ? "book.closed" : "doc.text")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(active ? ReaderPalette.accent : chromeFg.opacity(0.65))
+                                Text(tab.book.title)
+                                    .font(.system(size: 11.5, weight: active ? .semibold : .regular))
+                                    .foregroundStyle(chromeFg)
+                                    .lineLimit(1)
+                                    .frame(maxWidth: 150, alignment: .leading)
+                            }
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            Task { await vm.closeTab(id: tab.id) }
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(chromeFg.opacity(0.5))
+                                .padding(3)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Close \(tab.book.title)")
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(
+                        active ? ReaderPalette.background : chromeBg.opacity(0.6),
+                        in: RoundedRectangle(cornerRadius: 6)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(active ? ReaderPalette.hairline : Color.clear, lineWidth: 0.75)
+                    )
+                }
+
+                #if os(macOS)
+                Button {
+                    vm.openExternalFileWithPanel()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(chromeFg.opacity(0.75))
+                        .padding(6)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open file in new tab")
+                .help("Open PDF or EPUB (⌘O)")
+                #endif
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+        }
+        .background(chromeBg.opacity(0.92))
     }
 }
 
@@ -632,23 +935,248 @@ private struct SnapshotPDFReaderBody: View {
     let book: BookItem?
     let metadata: PDFMetadataSummary?
     let pageIndex: Int
+    var stamps: [PDFStampPlacement] = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(metadata?.title ?? book?.title ?? "PDF")
-                .font(.system(size: 17, weight: .semibold, design: .serif))
-            Text("Page \(pageIndex + 1) / \(max(1, metadata?.pageCount ?? 1))")
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(ReaderPalette.secondary)
-            if let front = metadata?.frontMatterText {
-                Text(front)
-                    .font(.system(size: 13))
-                    .foregroundStyle(ReaderPalette.label)
+        ZStack {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.white)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(ReaderPalette.hairline, lineWidth: 1))
+                .shadow(color: Color.black.opacity(0.06), radius: 8, y: 2)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text(metadata?.title ?? book?.title ?? "PDF")
+                    .font(.system(size: 17, weight: .semibold, design: .serif))
+                    .foregroundStyle(Color(red: 0.10, green: 0.11, blue: 0.14))
+                Text("Page \(pageIndex + 1) / \(max(1, metadata?.pageCount ?? 1))")
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(Color(red: 0.42, green: 0.44, blue: 0.48))
+                Divider()
+                if let front = metadata?.frontMatterText, !front.isEmpty {
+                    Text(front)
+                        .font(.system(size: 12.5, design: .serif))
+                        .foregroundStyle(Color(red: 0.16, green: 0.18, blue: 0.22))
+                        .lineSpacing(3)
+                }
+                Spacer()
             }
-            Spacer()
+            .padding(20)
+
+            if !stamps.isEmpty {
+                GeometryReader { geo in
+                    ForEach(stamps) { stamp in
+                        let rect = CGRect(
+                            x: stamp.normalizedRect.x * geo.size.width,
+                            y: stamp.normalizedRect.y * geo.size.height,
+                            width: stamp.normalizedRect.width * geo.size.width,
+                            height: stamp.normalizedRect.height * geo.size.height
+                        )
+                        SignatureVectorPreview(kind: stamp.kind)
+                            .frame(width: rect.width, height: rect.height)
+                            .padding(3)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                                    .foregroundStyle(ReaderPalette.accent)
+                            )
+                            .position(x: rect.midX, y: rect.midY)
+                    }
+                }
+            }
         }
         .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct PDFPaperAppearanceModifier: ViewModifier {
+    let appearance: PDFPaperAppearance
+
+    func body(content: Content) -> some View {
+        switch appearance {
+        case .original, .auto:
+            content
+        case .sepia:
+            content
+                .overlay {
+                    Color(red: 0.96, green: 0.90, blue: 0.77)
+                        .blendMode(.multiply)
+                        .allowsHitTesting(false)
+                }
+        case .night:
+            content
+                .colorInvert()
+                .hueRotation(.degrees(180))
+                .contrast(0.94)
+        }
+    }
+}
+
+private struct PDFStampOverlayView: View {
+    @Bindable var vm: ReaderViewModel
+    let stamps: [PDFStampPlacement]
+
+    var body: some View {
+        GeometryReader { geo in
+            let pageFrame: CGRect = {
+                let pf = vm.activePDFPageFrame
+                if pf.width > 40 && pf.height > 40 {
+                    return pf
+                }
+                return CGRect(origin: .zero, size: geo.size)
+            }()
+
+            ZStack(alignment: .topLeading) {
+                ForEach(stamps) { stamp in
+                    let w = max(44, stamp.normalizedRect.width * pageFrame.width)
+                    let h = max(24, stamp.normalizedRect.height * pageFrame.height)
+                    let cx = pageFrame.minX + stamp.normalizedRect.x * pageFrame.width + w * 0.5
+                    let cy = pageFrame.minY + stamp.normalizedRect.y * pageFrame.height + h * 0.5
+                    let selected = vm.selectedStampId == stamp.id
+
+                    ZStack {
+                        SignatureVectorPreview(kind: stamp.kind)
+                            .frame(width: w, height: h)
+                            .padding(4)
+                            .background(Color.white.opacity(0.78), in: RoundedRectangle(cornerRadius: 5))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 5)
+                                    .strokeBorder(
+                                        selected ? ReaderPalette.accent : ReaderPalette.hairline,
+                                        style: StrokeStyle(lineWidth: selected ? 1.5 : 1, dash: [4, 3])
+                                    )
+                            )
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                vm.selectedStampId = stamp.id
+                            }
+                            .gesture(
+                                DragGesture(minimumDistance: 2)
+                                    .onChanged { value in
+                                        let origin = vm.stampDragOriginRect ?? stamp.normalizedRect
+                                        if vm.stampDragOriginRect == nil {
+                                            vm.stampDragOriginRect = origin
+                                            vm.selectedStampId = stamp.id
+                                        }
+                                        let dx = value.translation.width / max(1, pageFrame.width)
+                                        let dy = value.translation.height / max(1, pageFrame.height)
+                                        var updated = origin
+                                        updated.x = origin.x + dx
+                                        updated.y = origin.y + dy
+                                        vm.updatePendingStamp(id: stamp.id, normalizedRect: updated)
+                                    }
+                                    .onEnded { _ in
+                                        vm.stampDragOriginRect = nil
+                                    }
+                            )
+
+                        if selected {
+                            Button {
+                                vm.removePendingStamp(id: stamp.id)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 16))
+                                    .foregroundStyle(ReaderPalette.label, ReaderPalette.background)
+                            }
+                            .buttonStyle(.plain)
+                            .offset(x: w * 0.5 + 4, y: -h * 0.5 - 4)
+
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 20, height: 20)
+                                .background(ReaderPalette.accent, in: Circle())
+                                .offset(x: w * 0.5 + 4, y: h * 0.5 + 4)
+                                .gesture(
+                                    DragGesture(minimumDistance: 1)
+                                        .onChanged { value in
+                                            let origin = vm.stampResizeOriginRect ?? stamp.normalizedRect
+                                            if vm.stampResizeOriginRect == nil {
+                                                vm.stampResizeOriginRect = origin
+                                            }
+                                            let dw = value.translation.width / max(1, pageFrame.width)
+                                            let dh = value.translation.height / max(1, pageFrame.height)
+                                            var updated = origin
+                                            updated.width = origin.width + dw
+                                            updated.height = origin.height + dh
+                                            vm.updatePendingStamp(id: stamp.id, normalizedRect: updated)
+                                        }
+                                        .onEnded { _ in
+                                            vm.stampResizeOriginRect = nil
+                                        }
+                                )
+                        }
+                    }
+                    .position(x: cx, y: cy)
+                }
+            }
+        }
+    }
+}
+
+private struct PDFSigningActionBar: View {
+    @Bindable var vm: ReaderViewModel
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button {
+                vm.activeSheet = .pdfSign
+            } label: {
+                Label("Stamp", systemImage: "signature")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(ReaderPalette.label)
+            }
+            .buttonStyle(.plain)
+
+            Divider().frame(height: 14)
+
+            Button {
+                vm.placeQuickTextStamp(PDFSignatureSheet.todayFormatted())
+            } label: {
+                Label("Date", systemImage: "calendar")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(ReaderPalette.label)
+            }
+            .buttonStyle(.plain)
+
+            Divider().frame(height: 14)
+
+            Button {
+                vm.clearPendingStamps()
+            } label: {
+                Text("Clear")
+                    .font(.system(size: 12))
+                    .foregroundStyle(ReaderPalette.secondary)
+            }
+            .buttonStyle(.plain)
+
+            Divider().frame(height: 14)
+
+            Button {
+                Task {
+                    #if os(macOS)
+                    await vm.saveSignedPDFWithPanel()
+                    #else
+                    if await vm.prepareSignedPDFExport() != nil {
+                        vm.isExportingSignedPDF = true
+                    }
+                    #endif
+                }
+            } label: {
+                Label("Save Signed PDF", systemImage: "checkmark.seal.fill")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(ReaderPalette.cohortGreen, in: Capsule())
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(ReaderPalette.surface, in: Capsule())
+        .overlay(Capsule().stroke(ReaderPalette.hairline, lineWidth: 1))
+        .shadow(radius: 6, y: 2)
     }
 }
 
@@ -713,11 +1241,26 @@ private struct PDFKitReaderView: UIViewRepresentable {
     let url: URL
     let pageIndex: Int
     let theme: ReaderTheme
+    let autoCrop: Bool
+    let twoColumnMode: Bool
+    let twoColumnStep: Int
+    let zoomScale: Double
+    let highlights: [ReadingHighlight]
+    let searchHighlightQuery: String?
     let onPageChanged: (Int) -> Void
+    let onSelectionChanged: (String) -> Void
+    let onColumnsDetected: (Int) -> Void
+    let onPageFrameChanged: (CGRect) -> Void
     let onCenterTap: () -> Void
 
     func makeCoordinator() -> PDFViewCoordinator {
-        PDFViewCoordinator(onPageChanged: onPageChanged, onCenterTap: onCenterTap)
+        PDFViewCoordinator(
+            onPageChanged: onPageChanged,
+            onSelectionChanged: onSelectionChanged,
+            onColumnsDetected: onColumnsDetected,
+            onPageFrameChanged: onPageFrameChanged,
+            onCenterTap: onCenterTap
+        )
     }
 
     func makeUIView(context: Context) -> PDFView {
@@ -726,6 +1269,7 @@ private struct PDFKitReaderView: UIViewRepresentable {
         view.displayMode = .singlePageContinuous
         view.backgroundColor = UIColor(ReaderPalette.themeBackground(theme))
         view.document = PDFDocument(url: url)
+        view.delegate = context.coordinator
         context.coordinator.observe(view)
 
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(PDFViewCoordinator.handleCenterTap(_:)))
@@ -737,15 +1281,21 @@ private struct PDFKitReaderView: UIViewRepresentable {
 
     func updateUIView(_ view: PDFView, context: Context) {
         context.coordinator.onCenterTap = onCenterTap
+        context.coordinator.onSelectionChanged = onSelectionChanged
+        context.coordinator.onColumnsDetected = onColumnsDetected
+        context.coordinator.onPageFrameChanged = onPageFrameChanged
         view.backgroundColor = UIColor(ReaderPalette.themeBackground(theme))
-        if view.document?.documentURL != url {
-            view.document = PDFDocument(url: url)
-        }
-        if let doc = view.document, pageIndex >= 0, pageIndex < doc.pageCount,
-           let target = doc.page(at: pageIndex),
-           view.currentPage != target {
-            view.go(to: target)
-        }
+        context.coordinator.syncDocumentState(
+            on: view,
+            url: url,
+            pageIndex: pageIndex,
+            autoCrop: autoCrop,
+            twoColumnMode: twoColumnMode,
+            twoColumnStep: twoColumnStep,
+            zoomScale: zoomScale,
+            highlights: highlights,
+            searchQuery: searchHighlightQuery
+        )
     }
 }
 #elseif canImport(AppKit)
@@ -804,11 +1354,26 @@ private struct PDFKitReaderView: NSViewRepresentable {
     let url: URL
     let pageIndex: Int
     let theme: ReaderTheme
+    let autoCrop: Bool
+    let twoColumnMode: Bool
+    let twoColumnStep: Int
+    let zoomScale: Double
+    let highlights: [ReadingHighlight]
+    let searchHighlightQuery: String?
     let onPageChanged: (Int) -> Void
+    let onSelectionChanged: (String) -> Void
+    let onColumnsDetected: (Int) -> Void
+    let onPageFrameChanged: (CGRect) -> Void
     let onCenterTap: () -> Void
 
     func makeCoordinator() -> PDFViewCoordinator {
-        PDFViewCoordinator(onPageChanged: onPageChanged, onCenterTap: onCenterTap)
+        PDFViewCoordinator(
+            onPageChanged: onPageChanged,
+            onSelectionChanged: onSelectionChanged,
+            onColumnsDetected: onColumnsDetected,
+            onPageFrameChanged: onPageFrameChanged,
+            onCenterTap: onCenterTap
+        )
     }
 
     func makeNSView(context: Context) -> PDFView {
@@ -817,21 +1382,28 @@ private struct PDFKitReaderView: NSViewRepresentable {
         view.displayMode = .singlePageContinuous
         view.backgroundColor = NSColor(ReaderPalette.themeBackground(theme))
         view.document = PDFDocument(url: url)
+        view.delegate = context.coordinator
         context.coordinator.observe(view)
         return view
     }
 
     func updateNSView(_ view: PDFView, context: Context) {
         context.coordinator.onCenterTap = onCenterTap
+        context.coordinator.onSelectionChanged = onSelectionChanged
+        context.coordinator.onColumnsDetected = onColumnsDetected
+        context.coordinator.onPageFrameChanged = onPageFrameChanged
         view.backgroundColor = NSColor(ReaderPalette.themeBackground(theme))
-        if view.document?.documentURL != url {
-            view.document = PDFDocument(url: url)
-        }
-        if let doc = view.document, pageIndex >= 0, pageIndex < doc.pageCount,
-           let target = doc.page(at: pageIndex),
-           view.currentPage != target {
-            view.go(to: target)
-        }
+        context.coordinator.syncDocumentState(
+            on: view,
+            url: url,
+            pageIndex: pageIndex,
+            autoCrop: autoCrop,
+            twoColumnMode: twoColumnMode,
+            twoColumnStep: twoColumnStep,
+            zoomScale: zoomScale,
+            highlights: highlights,
+            searchQuery: searchHighlightQuery
+        )
     }
 }
 #endif
@@ -957,36 +1529,232 @@ private final class EPUBWebCoordinator: NSObject, WKURLSchemeHandler, WKScriptMe
     }
 }
 
-#if canImport(UIKit)
 @MainActor
-private final class PDFViewCoordinator: NSObject, UIGestureRecognizerDelegate {
+private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
     let onPageChanged: (Int) -> Void
+    var onSelectionChanged: (String) -> Void
+    var onColumnsDetected: (Int) -> Void
+    var onPageFrameChanged: (CGRect) -> Void
     var onCenterTap: () -> Void
     private weak var pdfView: PDFView?
-    private nonisolated(unsafe) var observer: NSObjectProtocol?
+    private nonisolated(unsafe) var observers: [NSObjectProtocol] = []
 
-    init(onPageChanged: @escaping (Int) -> Void, onCenterTap: @escaping () -> Void) {
+    private var currentURL: URL?
+    private var cachedCropURL: URL?
+    private var cachedCropInsets: PDFCropInsets?
+    private var appliedCropState: Bool?
+    private var lastHighlightKey: String = ""
+    private var lastSearchQuery: String = ""
+    private var lastReportedSelection: String = ""
+    private var lastZoomScale: Double = 1.0
+    private var lastColumnKey: String = ""
+
+    init(
+        onPageChanged: @escaping (Int) -> Void,
+        onSelectionChanged: @escaping (String) -> Void,
+        onColumnsDetected: @escaping (Int) -> Void,
+        onPageFrameChanged: @escaping (CGRect) -> Void,
+        onCenterTap: @escaping () -> Void
+    ) {
         self.onPageChanged = onPageChanged
+        self.onSelectionChanged = onSelectionChanged
+        self.onColumnsDetected = onColumnsDetected
+        self.onPageFrameChanged = onPageFrameChanged
         self.onCenterTap = onCenterTap
     }
 
     func observe(_ pdfView: PDFView) {
         self.pdfView = pdfView
-        observer = NotificationCenter.default.addObserver(
-            forName: Notification.Name.PDFViewPageChanged,
-            object: pdfView,
-            queue: .main
-        ) { [weak self, weak pdfView] _ in
-            Task { @MainActor in
-                guard let self, let pdfView, let doc = pdfView.document, let page = pdfView.currentPage else { return }
-                let idx = doc.index(for: page)
-                if idx != NSNotFound {
-                    self.onPageChanged(idx)
+        let nc = NotificationCenter.default
+        observers.append(
+            nc.addObserver(forName: Notification.Name.PDFViewPageChanged, object: pdfView, queue: .main) { [weak self, weak pdfView] _ in
+                Task { @MainActor in
+                    guard let self, let pdfView, let doc = pdfView.document, let page = pdfView.currentPage else { return }
+                    let idx = doc.index(for: page)
+                    if idx != NSNotFound {
+                        self.onPageChanged(idx)
+                    }
+                    let cols = PDFColumnDetector.detectColumns(on: page)
+                    self.onColumnsDetected(cols.count)
+                    self.emitPageFrame(for: pdfView)
+                }
+            }
+        )
+        observers.append(
+            nc.addObserver(forName: Notification.Name.PDFViewScaleChanged, object: pdfView, queue: .main) { [weak self, weak pdfView] _ in
+                Task { @MainActor in
+                    guard let self, let pdfView else { return }
+                    self.emitPageFrame(for: pdfView)
+                }
+            }
+        )
+        observers.append(
+            nc.addObserver(forName: Notification.Name.PDFViewSelectionChanged, object: pdfView, queue: .main) { [weak self, weak pdfView] _ in
+                Task { @MainActor in
+                    guard let self, let pdfView else { return }
+                    let text = pdfView.currentSelection?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if text != self.lastReportedSelection {
+                        self.lastReportedSelection = text
+                        self.onSelectionChanged(text)
+                    }
+                }
+            }
+        )
+    }
+
+    func syncDocumentState(
+        on view: PDFView,
+        url: URL,
+        pageIndex: Int,
+        autoCrop: Bool,
+        twoColumnMode: Bool,
+        twoColumnStep: Int,
+        zoomScale: Double,
+        highlights: [ReadingHighlight],
+        searchQuery: String?
+    ) {
+        if currentURL != url || view.document == nil {
+            currentURL = url
+            cachedCropURL = nil
+            cachedCropInsets = nil
+            appliedCropState = nil
+            lastHighlightKey = ""
+            lastSearchQuery = ""
+            lastZoomScale = 1.0
+            lastColumnKey = ""
+            view.document = PDFDocument(url: url)
+        }
+
+        guard let doc = view.document else { return }
+
+        if cachedCropURL != url {
+            cachedCropURL = url
+            cachedCropInsets = PDFCropAnalyzer.computeDocumentCropInsets(for: doc)
+            appliedCropState = nil
+        }
+
+        if appliedCropState != autoCrop {
+            appliedCropState = autoCrop
+            PDFCropAnalyzer.applyCrop(autoCrop ? cachedCropInsets : nil, to: doc)
+            view.layoutDocumentView()
+        }
+
+        let hlKey = "\(highlights.count):\(highlights.first?.id ?? ""):\(highlights.last?.id ?? "")"
+        if lastHighlightKey != hlKey {
+            lastHighlightKey = hlKey
+            applyInMemoryHighlights(highlights, to: doc)
+        }
+
+        let cleanQuery = searchQuery?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if lastSearchQuery != cleanQuery {
+            lastSearchQuery = cleanQuery
+            if cleanQuery.count >= 2 {
+                let hits = doc.findString(cleanQuery, withOptions: .caseInsensitive)
+                view.highlightedSelections = Array(hits.prefix(40))
+            } else {
+                view.highlightedSelections = nil
+            }
+        }
+
+        if pageIndex >= 0, pageIndex < doc.pageCount,
+           let target = doc.page(at: pageIndex),
+           view.currentPage != target {
+            view.go(to: target)
+        }
+
+        if let currentPage = view.currentPage {
+            let cols = PDFColumnDetector.detectColumns(on: currentPage)
+            onColumnsDetected(cols.count)
+
+            let colKey = "\(twoColumnMode):\(twoColumnStep):\(pageIndex):\(cols.count)"
+            if twoColumnMode && cols.count >= 2 {
+                if lastColumnKey != colKey {
+                    lastColumnKey = colKey
+                    let colRect = cols[min(max(0, twoColumnStep), cols.count - 1)]
+                    view.autoScales = false
+                    let targetScale = max(view.minScaleFactor, min(view.maxScaleFactor, (view.bounds.width * 0.92) / max(120, colRect.width)))
+                    if targetScale.isFinite && targetScale > 0 {
+                        view.scaleFactor = targetScale
+                    }
+                    view.go(to: CGRect(x: colRect.minX, y: max(colRect.minY, colRect.maxY - 24), width: colRect.width, height: 24), on: currentPage)
+                }
+            } else {
+                if !lastColumnKey.isEmpty {
+                    lastColumnKey = ""
+                    view.autoScales = true
+                }
+                if abs(lastZoomScale - zoomScale) > 0.01 {
+                    lastZoomScale = zoomScale
+                    if abs(zoomScale - 1.0) < 0.01 {
+                        view.autoScales = true
+                    } else {
+                        view.autoScales = false
+                        let fit = max(0.2, view.scaleFactorForSizeToFit)
+                        view.scaleFactor = fit * zoomScale
+                    }
+                }
+            }
+        }
+
+        emitPageFrame(for: view)
+    }
+
+    private func applyInMemoryHighlights(_ highlights: [ReadingHighlight], to doc: PDFDocument) {
+        let marker = "cohort-reader-highlight"
+        for i in 0..<doc.pageCount {
+            guard let page = doc.page(at: i) else { continue }
+            for ann in page.annotations where ann.userName == marker {
+                page.removeAnnotation(ann)
+            }
+        }
+        guard !highlights.isEmpty else { return }
+        for h in highlights {
+            let quote = String(h.quote.trimmingCharacters(in: .whitespacesAndNewlines).prefix(140))
+            guard quote.count >= 3 else { continue }
+            if h.spine >= 0, h.spine < doc.pageCount, let page = doc.page(at: h.spine),
+               let sel = page.document?.findString(quote, withOptions: .caseInsensitive).first(where: { $0.pages.contains(page) }) {
+                for line in sel.selectionsByLine() {
+                    let bounds = line.bounds(for: page)
+                    guard bounds.width > 0, bounds.height > 0 else { continue }
+                    let ann = PDFAnnotation(bounds: bounds, forType: .highlight, withProperties: nil)
+                    ann.userName = marker
+                    #if canImport(UIKit)
+                    ann.color = UIColor.systemYellow.withAlphaComponent(0.36)
+                    #elseif canImport(AppKit)
+                    ann.color = NSColor.systemYellow.withAlphaComponent(0.36)
+                    #endif
+                    page.addAnnotation(ann)
                 }
             }
         }
     }
 
+    private func emitPageFrame(for view: PDFView) {
+        guard let page = view.currentPage, view.bounds.width > 10, view.bounds.height > 10 else { return }
+        let box = page.bounds(for: .cropBox)
+        let converted = view.convert(box, from: page)
+        #if canImport(AppKit)
+        let topY = view.isFlipped ? converted.minY : (view.bounds.height - converted.maxY)
+        let frame = CGRect(x: converted.minX, y: topY, width: converted.width, height: converted.height)
+        #else
+        let frame = converted
+        #endif
+        if frame.width > 20 && frame.height > 20 {
+            onPageFrameChanged(frame)
+        }
+    }
+
+    nonisolated func pdfViewWillClick(onLink sender: PDFView, with url: URL) {
+        Task { @MainActor in
+            #if canImport(UIKit)
+            UIApplication.shared.open(url)
+            #elseif canImport(AppKit)
+            NSWorkspace.shared.open(url)
+            #endif
+        }
+    }
+
+    #if canImport(UIKit)
     @objc func handleCenterTap(_ recognizer: UITapGestureRecognizer) {
         guard let pdfView else { return }
         guard pdfView.currentSelection == nil else { return }
@@ -996,48 +1764,22 @@ private final class PDFViewCoordinator: NSObject, UIGestureRecognizerDelegate {
             onCenterTap()
         }
     }
+    #endif
 
+    deinit {
+        for token in observers {
+            NotificationCenter.default.removeObserver(token)
+        }
+    }
+}
+
+#if canImport(UIKit)
+extension PDFViewCoordinator: UIGestureRecognizerDelegate {
     func gestureRecognizer(
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
     ) -> Bool {
         true
-    }
-
-    deinit {
-        if let observer { NotificationCenter.default.removeObserver(observer) }
-    }
-}
-#else
-@MainActor
-private final class PDFViewCoordinator: NSObject {
-    let onPageChanged: (Int) -> Void
-    var onCenterTap: () -> Void
-    private nonisolated(unsafe) var observer: NSObjectProtocol?
-
-    init(onPageChanged: @escaping (Int) -> Void, onCenterTap: @escaping () -> Void) {
-        self.onPageChanged = onPageChanged
-        self.onCenterTap = onCenterTap
-    }
-
-    func observe(_ pdfView: PDFView) {
-        observer = NotificationCenter.default.addObserver(
-            forName: Notification.Name.PDFViewPageChanged,
-            object: pdfView,
-            queue: .main
-        ) { [weak self, weak pdfView] _ in
-            Task { @MainActor in
-                guard let self, let pdfView, let doc = pdfView.document, let page = pdfView.currentPage else { return }
-                let idx = doc.index(for: page)
-                if idx != NSNotFound {
-                    self.onPageChanged(idx)
-                }
-            }
-        }
-    }
-
-    deinit {
-        if let observer { NotificationCenter.default.removeObserver(observer) }
     }
 }
 #endif
@@ -1309,7 +2051,7 @@ struct TOCSheet: View {
                         Image(systemName: "magnifyingglass")
                             .font(.system(size: 12.5))
                             .foregroundStyle(ReaderPalette.secondary)
-                        TextField("Search inside book", text: $vm.tocSearchQuery)
+                        TextField(vm.activePDFURL != nil ? "Search inside PDF" : "Search inside book", text: $vm.tocSearchQuery)
                             .font(.system(size: 13.5))
                             .onSubmit { vm.runInBookSearch() }
                             .onChange(of: vm.tocSearchQuery) { _, _ in vm.runInBookSearch() }
@@ -1381,7 +2123,11 @@ struct TOCSheet: View {
                                     HStack(alignment: .top, spacing: 8) {
                                         Button {
                                             Task {
-                                                await vm.selectEPUBSpine(h.spine)
+                                                if vm.activePDFURL != nil {
+                                                    await vm.selectPDFPage(h.spine, recordJump: true)
+                                                } else {
+                                                    await vm.selectEPUBSpine(h.spine)
+                                                }
                                                 dismiss()
                                             }
                                         } label: {
@@ -1467,7 +2213,7 @@ struct TOCSheet: View {
                         }
                     } else {
                         if vm.tocSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).count < 2 {
-                            Text("Type at least 2 characters to search chapters.")
+                            Text(vm.activePDFURL != nil ? "Type at least 2 characters to search PDF pages." : "Type at least 2 characters to search chapters.")
                                 .font(.system(size: 12.5))
                                 .foregroundStyle(ReaderPalette.secondary)
                         } else if vm.inBookMatches.isEmpty {
@@ -1479,7 +2225,11 @@ struct TOCSheet: View {
                                 Button {
                                     ReaderHaptics.selection()
                                     Task {
-                                        await vm.selectEPUBSpine(hit.spineIndex)
+                                        if vm.activePDFURL != nil {
+                                            await vm.selectPDFPage(hit.spineIndex, recordJump: true)
+                                        } else {
+                                            await vm.selectEPUBSpine(hit.spineIndex)
+                                        }
                                         dismiss()
                                     }
                                 } label: {
@@ -1489,7 +2239,7 @@ struct TOCSheet: View {
                                                 .font(.system(size: 12, weight: .semibold))
                                                 .foregroundStyle(ReaderPalette.accent)
                                             Spacer()
-                                            Text("Ch \(hit.spineIndex + 1)")
+                                            Text(vm.activePDFURL != nil ? "p.\(hit.spineIndex + 1)" : "Ch \(hit.spineIndex + 1)")
                                                 .font(.system(size: 10.5, design: .monospaced))
                                                 .foregroundStyle(ReaderPalette.secondary)
                                         }
@@ -1505,7 +2255,7 @@ struct TOCSheet: View {
                     }
                 }
             }
-            .navigationTitle(vm.tocSegment == 0 ? "Contents" : (vm.tocSegment == 1 ? "Notes & Highlights" : "Find in Book"))
+            .navigationTitle(vm.tocSegment == 0 ? "Contents" : (vm.tocSegment == 1 ? "Notes & Highlights" : (vm.activePDFURL != nil ? "Find in PDF" : "Find in Book")))
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Close") { dismiss() }

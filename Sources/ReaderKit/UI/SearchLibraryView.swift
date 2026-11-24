@@ -356,6 +356,30 @@ public struct SettingsSheet: View {
                         }
                     }
 
+                    #if os(macOS)
+                    Section("Local Library Mirror (Mac SSD)") {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(vm.localLibraryMirrorPath.isEmpty ? "Not linked" : URL(fileURLWithPath: vm.localLibraryMirrorPath).lastPathComponent)
+                                    .font(.system(size: 13, weight: .medium))
+                                Text(vm.localLibraryMirrorPath.isEmpty ? "Link a local folder to open owned files directly from SSD" : vm.localLibraryMirrorPath)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(ReaderPalette.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Button(vm.localLibraryMirrorPath.isEmpty ? "Choose…" : "Change…") {
+                                vm.chooseLocalLibraryMirrorWithPanel()
+                            }
+                            if !vm.localLibraryMirrorPath.isEmpty {
+                                Button("Clear", role: .destructive) {
+                                    vm.clearLocalLibraryMirror()
+                                }
+                            }
+                        }
+                    }
+                    #endif
+
                     if let msg = vm.lastHandoffMessage {
                         Section("Cohort") {
                             Text(msg)

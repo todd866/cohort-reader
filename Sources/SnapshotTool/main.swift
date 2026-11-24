@@ -1,6 +1,10 @@
 #if os(macOS)
 import AppKit
+import CoreGraphics
+import CoreText
 import Foundation
+import PDFEngine
+import PDFKit
 import ReaderKit
 import ReaderModel
 import ReaderStorage
@@ -74,7 +78,77 @@ enum SnapshotRunner {
             SettingsSheet(vm: vm)
         }
 
+        // 9. PDF Reader + Placed Vector Stamp Preview (clean-room synthetic PDF)
+        let tmpPDFURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cohort-snapshot-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: tmpPDFURL) }
+        if buildSampleAcademicPDF(to: tmpPDFURL) {
+            let sampleSig = SavedSignature(
+                label: "M. Shelley",
+                strokes: [[
+                    SignaturePoint(x: 0.08, y: 0.65),
+                    SignaturePoint(x: 0.22, y: 0.25),
+                    SignaturePoint(x: 0.36, y: 0.68),
+                    SignaturePoint(x: 0.55, y: 0.38),
+                    SignaturePoint(x: 0.72, y: 0.55),
+                    SignaturePoint(x: 0.90, y: 0.42),
+                ]],
+                inkColor: .navy,
+                aspectRatio: 2.6
+            )
+            vm.savedSignatures = [sampleSig]
+            vm.signatureDraftStrokes = sampleSig.strokes
+            await vm.quickOpenExternalFile(from: tmpPDFURL)
+            vm.pendingPDFStamps = [
+                PDFStampPlacement(
+                    pageIndex: 0,
+                    normalizedRect: CodableRect(x: 0.22, y: 0.72, width: 0.34, height: 0.11),
+                    kind: .signature(sampleSig)
+                ),
+            ]
+            try renderScenario("read-pdf", targets: targets, outDir: outDir) {
+                ReaderRootView(vm: vm)
+            }
+
+            // 10. Signature Pad Sheet
+            try renderScenario("pdf-sign", targets: targets, outDir: outDir) {
+                PDFSignatureSheet(vm: vm)
+            }
+        }
+
         print("Rendered Cohort Reader snapshots cleanly into \(outDir.path)")
+    }
+
+    private static func buildSampleAcademicPDF(to url: URL) -> Bool {
+        var box = CGRect(x: 0, y: 0, width: 612, height: 792)
+        guard let ctx = CGContext(url as CFURL, mediaBox: &box, nil) else { return false }
+        let lines = [
+            "Lightweight Local-First Document Signatures",
+            "Sample Research & Consent Agreement",
+            "",
+            "1. All parsing, margin trimming, and vector signature flattening",
+            "occur locally using CoreGraphics and PDFKit with zero network calls.",
+            "",
+            "2. Original selectable text and vector fonts remain intact in the signed PDF.",
+            "",
+            "Participant Signature: _________________________________",
+        ]
+        ctx.beginPDFPage(nil)
+        let font = CTFontCreateWithName("Georgia" as CFString, 14, nil)
+        let boldFont = CTFontCreateWithName("Georgia-Bold" as CFString, 18, nil)
+        for (idx, lineText) in lines.enumerated() where !lineText.isEmpty {
+            let f = idx == 0 ? boldFont : font
+            let attr = NSAttributedString(
+                string: lineText,
+                attributes: [NSAttributedString.Key(kCTFontAttributeName as String): f]
+            )
+            let ctLine = CTLineCreateWithAttributedString(attr)
+            ctx.textPosition = CGPoint(x: 56, y: 710 - CGFloat(idx) * 28)
+            CTLineDraw(ctLine, ctx)
+        }
+        ctx.endPDFPage()
+        ctx.closePDF()
+        return true
     }
 
     private static func renderScenario<V: View>(
