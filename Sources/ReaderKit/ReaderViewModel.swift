@@ -56,6 +56,21 @@ public enum ReaderTab: String, CaseIterable, Sendable {
     }
 }
 
+public struct FootnotePreview: Identifiable, Sendable, Hashable {
+    public var id: String { "\(archivePath)#\(fragment)" }
+    public var title: String
+    public var body: String
+    public var archivePath: String
+    public var fragment: String
+
+    public init(title: String, body: String, archivePath: String, fragment: String) {
+        self.title = title
+        self.body = body
+        self.archivePath = archivePath
+        self.fragment = fragment
+    }
+}
+
 public enum ActiveReaderSheet: Identifiable, Sendable {
     case settings
     case marginNote(MarginNote)
@@ -64,6 +79,7 @@ public enum ActiveReaderSheet: Identifiable, Sendable {
     case toc
     case typography
     case pdfSign
+    case footnote(FootnotePreview)
 
     public var id: String {
         switch self {
@@ -74,6 +90,7 @@ public enum ActiveReaderSheet: Identifiable, Sendable {
         case .toc: return "toc"
         case .typography: return "typography"
         case .pdfSign: return "pdf-sign"
+        case .footnote(let f): return "footnote:\(f.id)"
         }
     }
 }
@@ -175,6 +192,13 @@ public final class ReaderViewModel {
     public var lastSignedSavePath: String?
     public var localLibraryMirrorPath: String = ""
     public var signatureStoreURL: URL?
+    public var pdfTwoUpMode: Bool = false
+    public var deletedSignatureIds: Set<String> = []
+    public var lastSyncAt: Date?
+    public var isSendingToInbox: Bool = false
+    public var toastMessage: String?
+    public var pdfThumbnailPageInput: String = ""
+    public var tocShowsPDFThumbnails: Bool = false
 
     // Search
     public var searchQuery: String = ""
@@ -193,9 +217,11 @@ public final class ReaderViewModel {
     private var autoDownloadTask: Task<Void, Never>?
     private var openBookTask: Task<Void, Never>?
     private var pdfSearchTask: Task<Void, Never>?
+    private var toastDismissTask: Task<Void, Never>?
     private var openBookGeneration: Int = 0
     private var manifoldSyncedOnce: Bool = false
     private var allowBackgroundSync: Bool = true
+    private var didOpenExternalFileAtLaunch: Bool = false
     private var quickOpenScopedURLs: [String: URL] = [:]
     private var localMirrorScopedURL: URL?
 
@@ -227,6 +253,10 @@ public final class ReaderViewModel {
             self.pdfAppearance = parsedAppearance
         }
         self.pdfAutoCropEnabled = defaults.bool(forKey: "cohortReader.pdfAutoCropEnabled")
+        self.pdfTwoUpMode = defaults.bool(forKey: "cohortReader.pdfTwoUpMode")
+        if let savedDeletedSigs = defaults.stringArray(forKey: "cohortReader.deletedSignatureIds") {
+            self.deletedSignatureIds = Set(savedDeletedSigs)
+        }
         self.savedSignatures = SignatureStore.load(from: signatureStoreURL)
         #if os(macOS)
         if let bmData = defaults.data(forKey: "cohortReader.localMirrorBookmark") {
@@ -258,6 +288,8 @@ public final class ReaderViewModel {
         defaults.set(shelfSortOrder.rawValue, forKey: "cohortReader.shelfSortOrder")
         defaults.set(pdfAppearance.rawValue, forKey: "cohortReader.pdfAppearance")
         defaults.set(pdfAutoCropEnabled, forKey: "cohortReader.pdfAutoCropEnabled")
+        defaults.set(pdfTwoUpMode, forKey: "cohortReader.pdfTwoUpMode")
+        defaults.set(Array(deletedSignatureIds), forKey: "cohortReader.deletedSignatureIds")
     }
 
     public func bootstrap(loadSampleBook: Bool = true, runNetworkSync: Bool = true) async {
@@ -295,11 +327,13 @@ public final class ReaderViewModel {
             offlineBytes = await store.cachedBookBytes()
             pendingOutboxCount = (try? await store.pendingSyncEvents().count) ?? 0
 
-            let lastId = defaults.string(forKey: "cohortReader.lastBookId")
-            let initial = (lastId.flatMap { id in books.first(where: { $0.id == id && ($0.isOfflineCached || $0.canonicalId == "gutenberg:84") }) })
-                ?? books.first(where: { $0.isOfflineCached })
-            if let initial {
-                await openBook(initial, switchTab: false)
+            if !didOpenExternalFileAtLaunch && activeBook == nil && openTabs.isEmpty {
+                let lastId = defaults.string(forKey: "cohortReader.lastBookId")
+                let initial = (lastId.flatMap { id in books.first(where: { $0.id == id && ($0.isOfflineCached || $0.canonicalId == "gutenberg:84") }) })
+                    ?? books.first(where: { $0.isOfflineCached })
+                if let initial {
+                    await openBook(initial, switchTab: false)
+                }
             }
 
             if runNetworkSync && !serverURL.isEmpty && !isServerConnected {
@@ -728,7 +762,15 @@ public final class ReaderViewModel {
     }
     #endif
 
+    public func noteExternalFileLaunch() {
+        didOpenExternalFileAtLaunch = true
+    }
+
     public func quickOpenExternalFile(from url: URL) async {
+        didOpenExternalFileAtLaunch = true
+        if activeBook?.localFilePath == url.path && selectedTab == .read {
+            return
+        }
         let accessed = url.startAccessingSecurityScopedResource()
         let ext = url.pathExtension.lowercased()
         let isPDF = ext != "epub"
@@ -808,6 +850,15 @@ public final class ReaderViewModel {
         await openBook(tab.book, switchTab: true)
     }
 
+    public func selectAdjacentTab(delta: Int) async {
+        guard openTabs.count > 1,
+              let activeId = activeBook?.id,
+              let idx = openTabs.firstIndex(where: { $0.id == activeId }) else { return }
+        let count = openTabs.count
+        let nextIdx = ((idx + delta) % count + count) % count
+        await openBook(openTabs[nextIdx].book, switchTab: true)
+    }
+
     public func closeTab(id: String) async {
         let wasActive = activeBook?.id == id
         let idx = openTabs.firstIndex(where: { $0.id == id })
@@ -875,6 +926,7 @@ public final class ReaderViewModel {
         pdfTwoColumnStep = 0
         pdfDetectedColumnCount = 1
         activePDFPageFrame = .zero
+        tocShowsPDFThumbnails = false
         openingBookId = book.id
         if switchTab {
             selectedTab = .read
@@ -964,12 +1016,57 @@ public final class ReaderViewModel {
         try? await store.saveHighlight(highlight)
         activeHighlights = (try? await store.listHighlights(bookId: book.id)) ?? []
         activeSelectionText = ""
-        lastHandoffMessage = "Saved highlight in \(book.title)"
+        showToast("Highlighted in \(book.title)")
+        if isServerConnected {
+            Task { await self.syncHighlightsWithServer() }
+        }
     }
 
     public func deleteHighlight(_ highlight: ReadingHighlight) async {
         try? await store.deleteHighlight(id: highlight.id)
         activeHighlights.removeAll { $0.id == highlight.id }
+        if isServerConnected {
+            Task { await self.syncHighlightsWithServer() }
+        }
+    }
+
+    public func previewEPUBFootnote(archivePath: String, fragment: String) {
+        let cleanFrag = fragment.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        guard !cleanFrag.isEmpty, let doc = activeEPUB else { return }
+        if let text = doc.extractFootnotePreview(archivePath: archivePath, fragmentId: cleanFrag) {
+            let label = cleanFrag
+                .replacingOccurrences(of: "_", with: " ")
+                .replacingOccurrences(of: "-", with: " ")
+            transitionSheet(to: .footnote(FootnotePreview(
+                title: "Note (\(label))",
+                body: text,
+                archivePath: archivePath,
+                fragment: cleanFrag
+            )))
+            return
+        }
+        let baseHref = archivePath.components(separatedBy: "#").first ?? archivePath
+        let baseName = (baseHref as NSString).lastPathComponent
+        if let idx = doc.spineHrefs.firstIndex(where: { $0 == baseHref || ($0 as NSString).lastPathComponent == baseName }),
+           idx != activeEPUBSpineIndex {
+            Task { await self.selectEPUBSpine(idx) }
+        }
+    }
+
+    public func showToast(_ message: String) {
+        toastDismissTask?.cancel()
+        toastMessage = message
+        lastHandoffMessage = message
+        toastDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(5.0))
+            guard !Task.isCancelled, self?.toastMessage == message else { return }
+            self?.toastMessage = nil
+        }
+    }
+
+    public func dismissToast() {
+        toastDismissTask?.cancel()
+        toastMessage = nil
     }
 
     public func runInBookSearch() {
@@ -1087,6 +1184,8 @@ public final class ReaderViewModel {
             } else {
                 activePDFPageIndex = 0
             }
+            tocShowsPDFThumbnails = meta?.outline.isEmpty ?? false
+            pdfThumbnailPageInput = "\(activePDFPageIndex + 1)"
             if !AssetImageCache.shared.hasImage(forBookId: book.id) {
                 let bookId = book.id
                 Task {
@@ -1227,6 +1326,11 @@ public final class ReaderViewModel {
         savePreferences()
     }
 
+    public func togglePDFTwoUpMode() {
+        pdfTwoUpMode.toggle()
+        savePreferences()
+    }
+
     // MARK: - Lightweight Vector PDF Signing
 
     public func commitDraftStroke() {
@@ -1278,6 +1382,9 @@ public final class ReaderViewModel {
         clearDraftSignature()
         placeSavedSignature(created)
         activeSheet = nil
+        if isServerConnected {
+            Task { await self.syncSignaturesWithServer() }
+        }
     }
 
     public func placeSavedSignature(_ sig: SavedSignature) {
@@ -1321,7 +1428,12 @@ public final class ReaderViewModel {
 
     public func deleteSavedSignature(id: String) {
         savedSignatures.removeAll { $0.id == id }
+        deletedSignatureIds.insert(id)
+        savePreferences()
         try? SignatureStore.save(savedSignatures, to: signatureStoreURL)
+        if isServerConnected {
+            Task { await self.syncSignaturesWithServer() }
+        }
     }
 
     public func updatePendingStamp(id: String, normalizedRect: CodableRect) {
@@ -1385,7 +1497,7 @@ public final class ReaderViewModel {
             do {
                 try data.write(to: dest, options: .atomic)
                 lastSignedSavePath = dest.path
-                lastHandoffMessage = "Saved signed PDF: \(dest.lastPathComponent)"
+                showToast("Saved signed PDF: \(dest.lastPathComponent)")
                 clearPendingStamps()
             } catch {
                 bannerError = "Failed to save signed PDF: \(error.localizedDescription)"
@@ -1765,7 +1877,10 @@ public final class ReaderViewModel {
             AssetImageCache.shared.resetFailures()
             serverName = name
             serverStatusMessage = "\(name) · \(catalog.items.count) works"
+            lastSyncAt = Date()
             await flushProgressOutbox()
+            await syncHighlightsWithServer()
+            await syncSignaturesWithServer()
             await syncManifoldOwnershipWithServer()
             if !manifoldSyncedOnce {
                 manifoldSyncedOnce = true
@@ -1795,6 +1910,194 @@ public final class ReaderViewModel {
         } catch {
             // Retain in SQLite outbox until back online
         }
+    }
+
+    public func syncHighlightsWithServer() async {
+        guard isServerConnected, !serverURL.isEmpty else { return }
+        do {
+            let allLocal = try await store.listAllHighlights()
+            let deletedIds = try await store.listDeletedHighlightIds()
+            let merged = try await HomeLibraryClient.syncHighlights(
+                baseURL: serverURL,
+                highlights: allLocal,
+                deletedIds: deletedIds
+            )
+            try await store.mergeRemoteHighlights(merged.highlights, deletedIds: merged.deletedIds)
+            if let activeId = activeBook?.id {
+                activeHighlights = (try? await store.listHighlights(bookId: activeId)) ?? []
+            }
+        } catch {
+            // Retain local SQLite highlights & deleted tombstones until reachable
+        }
+    }
+
+    public func syncSignaturesWithServer() async {
+        guard isServerConnected, !serverURL.isEmpty else { return }
+        struct SigPayload: Codable {
+            var signatures: [SavedSignature]
+            var deletedIds: [String]
+        }
+        do {
+            let reqData = try HomeLibraryClient.makeEncoder().encode(
+                SigPayload(signatures: savedSignatures, deletedIds: Array(deletedSignatureIds))
+            )
+            let respData = try await HomeLibraryClient.syncSignaturesJSON(baseURL: serverURL, payload: reqData)
+            let decoded = try HomeLibraryClient.makeDecoder().decode(SigPayload.self, from: respData)
+            deletedSignatureIds.formUnion(decoded.deletedIds)
+            savedSignatures = decoded.signatures
+                .filter { !deletedSignatureIds.contains($0.id) }
+                .sorted { $0.createdAt > $1.createdAt }
+            savePreferences()
+            try? SignatureStore.save(savedSignatures, to: signatureStoreURL)
+        } catch {
+            // Retain local signatures until reachable
+        }
+    }
+
+    public func syncOnForegroundIfStale(minIntervalSeconds: TimeInterval = 15) async {
+        guard allowBackgroundSync, !serverURL.isEmpty else { return }
+        if let last = lastSyncAt, Date().timeIntervalSince(last) < minIntervalSeconds {
+            await flushProgressOutbox()
+            return
+        }
+        await syncServerCatalog(silent: true)
+    }
+
+    public func sendActiveDocumentToHomeInbox(overrideData: Data? = nil, overrideFilename: String? = nil) async {
+        guard isServerConnected, !serverURL.isEmpty else {
+            bannerError = "Connect to Home Library Server in Settings to send files between Mac and iPhone."
+            return
+        }
+        let book = activeBook
+        isSendingToInbox = true
+        defer { isSendingToInbox = false }
+
+        do {
+            let payload: Data
+            let filename: String
+            let title: String
+
+            if let overrideData {
+                payload = overrideData
+                filename = overrideFilename ?? Self.suggestedSignedFilename(
+                    for: book,
+                    url: activePDFURL ?? URL(fileURLWithPath: "document.pdf")
+                )
+                title = (book?.title.isEmpty == false)
+                    ? "\(book!.title) (Signed)"
+                    : (filename as NSString).deletingPathExtension
+            } else if let sourceURL = activePDFURL ?? book?.localFilePath.map({ URL(fileURLWithPath: $0) }) {
+                payload = try await Task.detached(priority: .userInitiated) {
+                    try Data(contentsOf: sourceURL)
+                }.value
+                filename = sourceURL.lastPathComponent
+                title = book?.title ?? sourceURL.deletingPathExtension().lastPathComponent
+            } else {
+                bannerError = "Open or download a local PDF or EPUB before sending to Home Inbox."
+                return
+            }
+
+            guard payload.count <= 50 * 1024 * 1024 else {
+                bannerError = "Document exceeds the 50 MB Home Inbox sync limit."
+                return
+            }
+
+            let uploaded = try await HomeLibraryClient.uploadToInbox(
+                baseURL: serverURL,
+                data: payload,
+                filename: filename,
+                title: title,
+                author: book?.author ?? "Cohort Reader",
+                canonicalId: book?.canonicalId
+            )
+            if let localCopy = try? await store.storeOfflineBookData(payload, bookId: uploaded.id, format: uploaded.format) {
+                var enriched = uploaded
+                enriched.isOfflineCached = true
+                enriched.localFilePath = localCopy.path
+                enriched.bytes = Int64(payload.count)
+                try? await store.upsertBooks([enriched])
+            }
+            await syncServerCatalog(silent: true)
+            showToast("Sent '\(title)' to Home Inbox")
+        } catch {
+            bannerError = "Failed to send to Home Inbox: \(error.localizedDescription)"
+        }
+    }
+
+    public func currentHandoffUserInfo() -> [String: Any]? {
+        guard let book = activeBook else { return nil }
+        var info: [String: Any] = [
+            "bookId": book.id,
+            "title": book.title,
+            "author": book.author,
+            "format": book.format.rawValue,
+        ]
+        if let cid = book.canonicalId, !cid.isEmpty {
+            info["canonicalId"] = cid
+        }
+        if activePDFURL != nil {
+            info["spine"] = activePDFPageIndex
+            if let meta = activePDFMetadata, meta.pageCount > 0 {
+                info["fraction"] = PDFInspector.fraction(forPage: activePDFPageIndex, pageCount: meta.pageCount)
+            } else if let frac = book.locator?.fraction {
+                info["fraction"] = frac
+            }
+        } else {
+            info["spine"] = activeEPUBSpineIndex
+            if let frac = book.locator?.fraction {
+                info["fraction"] = frac
+            }
+        }
+        return info
+    }
+
+    public func handleHandoffActivity(_ userInfo: [AnyHashable: Any]) async {
+        let targetBookId = userInfo["bookId"] as? String
+        let targetCanonicalId = userInfo["canonicalId"] as? String
+        let targetTitle = userInfo["title"] as? String
+        let targetSpine = userInfo["spine"] as? Int
+        let targetFraction = userInfo["fraction"] as? Double
+
+        func findBook() -> BookItem? {
+            if let bid = targetBookId, let exact = books.first(where: { $0.id == bid }) {
+                return exact
+            }
+            if let cid = targetCanonicalId, !cid.isEmpty,
+               let match = books.first(where: { $0.canonicalId == cid }) {
+                return match
+            }
+            if let title = targetTitle, !title.isEmpty {
+                let key = Self.normalizedTitleKey(title)
+                if !key.isEmpty, let match = books.first(where: { Self.normalizedTitleKey($0.title) == key }) {
+                    return match
+                }
+            }
+            return nil
+        }
+
+        var match = findBook()
+        if match == nil, !serverURL.isEmpty {
+            await syncServerCatalog(silent: true)
+            match = findBook()
+        }
+        guard var target = match else {
+            let label = targetTitle ?? targetBookId ?? "document"
+            showToast("Could not find '\(label)' locally — use Send to Phone/Mac to share it.")
+            return
+        }
+        if let targetSpine {
+            let newLoc = ReadingLocator(
+                spine: max(0, targetSpine),
+                fraction: min(max(targetFraction ?? 0, 0), 1),
+                wordOffset: nil,
+                pageIndex: target.format == .pdf ? max(0, targetSpine) : nil,
+                updatedAt: Date()
+            )
+            target.locator = newLoc
+            _ = try? await store.saveLocator(bookId: target.id, locator: newLoc, enqueueSync: false)
+        }
+        await openBook(target, switchTab: true)
+        showToast("Continued from Handoff: \(target.title)")
     }
 
     public func runSearch() async {

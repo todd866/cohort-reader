@@ -136,6 +136,38 @@ public enum EPUBHTMLComposer {
         let highlightsJSONData = (try? JSONEncoder().encode(hlQuotes)) ?? Data("[]".utf8)
         let highlightsJSON = String(data: highlightsJSONData, encoding: .utf8) ?? "[]"
         let wordOffsetJS = initialWordOffset.map(String.init) ?? "null"
+        let isPaginated = (typography.readingFlow == .paginated)
+
+        let paginatedCSS = isPaginated ? """
+          html {
+            height: 100vh !important;
+            overflow: hidden !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }
+          body {
+            height: calc(100vh - 8px) !important;
+            width: 100vw !important;
+            max-width: none !important;
+            box-sizing: border-box !important;
+            margin: 0 !important;
+            padding: 18px var(--cr-pad-x) 24px var(--cr-pad-x) !important;
+            column-width: calc(100vw - 2 * var(--cr-pad-x)) !important;
+            column-gap: calc(2 * var(--cr-pad-x)) !important;
+            column-fill: auto !important;
+            overflow-x: auto !important;
+            overflow-y: hidden !important;
+            scroll-snap-type: x mandatory;
+            -webkit-overflow-scrolling: touch;
+          }
+          img, svg { max-height: 74vh !important; }
+        """ : """
+          html, body {
+            margin: 0 auto !important;
+            padding: 18px var(--cr-pad-x) 88px var(--cr-pad-x) !important;
+            max-width: 68ch !important;
+          }
+        """
 
         let headInject = """
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
@@ -160,11 +192,9 @@ public enum EPUBHTMLComposer {
             font-family: var(--cr-font) !important;
             font-size: var(--cr-size) !important;
             line-height: var(--cr-lh) !important;
-            margin: 0 auto !important;
-            padding: 18px var(--cr-pad-x) 88px var(--cr-pad-x) !important;
-            max-width: 68ch !important;
             -webkit-text-size-adjust: 100%;
           }
+          \(paginatedCSS)
           h1, h2, h3, h4 {
             font-weight: 600;
             line-height: 1.25;
@@ -201,6 +231,8 @@ public enum EPUBHTMLComposer {
         (function() {
           const NOTES = \(notesJSON);
           const HIGHLIGHTS = \(highlightsJSON);
+          const IS_PAGINATED = \(isPaginated ? "true" : "false");
+          let userInteracted = false;
 
           window.__cohortApplyTypography = function(cfg) {
             if (!cfg || !document.documentElement) return;
@@ -216,6 +248,17 @@ public enum EPUBHTMLComposer {
             if (cfg.lh) s.setProperty('--cr-lh', cfg.lh);
             if (cfg.padX) s.setProperty('--cr-pad-x', cfg.padX);
             if (cfg.align) s.setProperty('--cr-align', cfg.align);
+          };
+
+          window.__cohortAddHighlight = function(quote) {
+            if (!quote || !document.body) return;
+            const clean = String(quote).trim();
+            if (!clean) return;
+            wrapMatches([{ anchor: clean }], function() {
+              const span = document.createElement('span');
+              span.className = 'cohort-highlight';
+              return span;
+            });
           };
 
           function fold(c) {
@@ -302,6 +345,45 @@ public enum EPUBHTMLComposer {
             } catch (_) {}
           }
 
+          function stepPage(dir) {
+            userInteracted = true;
+            if (IS_PAGINATED) {
+              const el = document.body;
+              const step = Math.max(200, window.innerWidth);
+              const maxX = Math.max(0, el.scrollWidth - window.innerWidth);
+              if (dir < 0) {
+                if (el.scrollLeft <= 10) {
+                  post('zoneTap', { zone: 'prev' });
+                } else {
+                  const target = Math.max(0, Math.round((el.scrollLeft - step) / step) * step);
+                  el.scrollTo({ left: target, behavior: 'smooth' });
+                }
+              } else {
+                if (el.scrollLeft >= maxX - 10) {
+                  post('zoneTap', { zone: 'next' });
+                } else {
+                  const target = Math.min(maxX, Math.round((el.scrollLeft + step) / step) * step);
+                  el.scrollTo({ left: target, behavior: 'smooth' });
+                }
+              }
+              return;
+            }
+            if (dir < 0) {
+              if (window.scrollY <= 8) {
+                post('zoneTap', { zone: 'prev' });
+              } else {
+                window.scrollBy({ top: -window.innerHeight * 0.85, behavior: 'smooth' });
+              }
+            } else {
+              const maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+              if (window.scrollY >= maxY - 8) {
+                post('zoneTap', { zone: 'next' });
+              } else {
+                window.scrollBy({ top: window.innerHeight * 0.85, behavior: 'smooth' });
+              }
+            }
+          }
+
           document.addEventListener('click', function(ev) {
             const target = ev.target && ev.target.closest ? ev.target.closest('.cohort-note') : null;
             if (target && target.dataset.note) {
@@ -316,22 +398,53 @@ public enum EPUBHTMLComposer {
             const w = Math.max(1, window.innerWidth);
             const ratio = ev.clientX / w;
             if (ratio < 0.18) {
-              if (window.scrollY <= 8) {
-                post('zoneTap', { zone: 'prev' });
-              } else {
-                window.scrollBy({ top: -window.innerHeight * 0.85, behavior: 'smooth' });
-              }
+              stepPage(-1);
             } else if (ratio > 0.82) {
-              const maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-              if (window.scrollY >= maxY - 8) {
-                post('zoneTap', { zone: 'next' });
-              } else {
-                window.scrollBy({ top: window.innerHeight * 0.85, behavior: 'smooth' });
-              }
+              stepPage(1);
             } else {
               post('zoneTap', { zone: 'center' });
             }
           });
+
+          document.addEventListener('keydown', function(ev) {
+            if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+            const tag = ev.target && ev.target.tagName ? ev.target.tagName.toLowerCase() : '';
+            if (tag === 'input' || tag === 'textarea') return;
+            if (ev.key === 'ArrowRight' || (ev.key === ' ' && !ev.shiftKey)) {
+              ev.preventDefault();
+              stepPage(1);
+            } else if (ev.key === 'ArrowLeft' || (ev.key === ' ' && ev.shiftKey)) {
+              ev.preventDefault();
+              stepPage(-1);
+            } else if (ev.key === 'j' && !IS_PAGINATED) {
+              userInteracted = true;
+              window.scrollBy({ top: 120, behavior: 'smooth' });
+            } else if (ev.key === 'k' && !IS_PAGINATED) {
+              userInteracted = true;
+              window.scrollBy({ top: -120, behavior: 'smooth' });
+            }
+          });
+
+          if (IS_PAGINATED) {
+            let touchStartX = null;
+            let touchStartY = null;
+            document.addEventListener('touchstart', function(ev) {
+              if (ev.touches && ev.touches.length === 1) {
+                touchStartX = ev.touches[0].clientX;
+                touchStartY = ev.touches[0].clientY;
+              }
+            }, { passive: true });
+            document.addEventListener('touchend', function(ev) {
+              if (touchStartX === null || !ev.changedTouches || !ev.changedTouches.length) return;
+              const dx = ev.changedTouches[0].clientX - touchStartX;
+              const dy = ev.changedTouches[0].clientY - touchStartY;
+              touchStartX = null;
+              touchStartY = null;
+              if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+                stepPage(dx < 0 ? 1 : -1);
+              }
+            }, { passive: true });
+          }
 
           document.addEventListener('selectionchange', function() {
             const sel = window.getSelection ? String(window.getSelection()).trim() : '';
@@ -342,35 +455,65 @@ public enum EPUBHTMLComposer {
             }
           });
 
-          function restorePosition() {
-            const maxScroll = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+          function computeTargetFraction() {
             const targetFrac = \(initialFraction);
             const wordTarget = \(wordOffsetJS);
             if (typeof wordTarget === 'number' && wordTarget > 0) {
               const full = (document.body.innerText || '').trim();
               const totalWords = Math.max(1, full.split(/\\s+/).length);
-              const estFrac = Math.min(1, Math.max(0, wordTarget / totalWords));
+              return Math.min(1, Math.max(0, wordTarget / totalWords));
+            }
+            return Math.min(1, Math.max(0, targetFrac));
+          }
+
+          function restorePosition() {
+            if (userInteracted) return;
+            const estFrac = computeTargetFraction();
+            if (estFrac <= 0) return;
+            if (IS_PAGINATED) {
+              const el = document.body;
+              const step = Math.max(200, window.innerWidth);
+              const maxX = Math.max(0, el.scrollWidth - window.innerWidth);
+              const pageIdx = Math.round((estFrac * maxX) / step);
+              el.scrollLeft = Math.min(maxX, pageIdx * step);
+            } else {
+              const maxScroll = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
               window.scrollTo(0, estFrac * maxScroll);
-            } else if (targetFrac > 0) {
-              window.scrollTo(0, targetFrac * maxScroll);
             }
           }
 
-          let scrollTimer = null;
-          window.addEventListener('scroll', function() {
-            clearTimeout(scrollTimer);
-            scrollTimer = setTimeout(function() {
+          function emitProgress() {
+            const words = ((document.body.innerText || '').trim().split(/\\s+/).filter(Boolean)).length;
+            let fraction = 0;
+            if (IS_PAGINATED) {
+              const maxX = Math.max(1, document.body.scrollWidth - window.innerWidth);
+              fraction = Math.min(1, Math.max(0, document.body.scrollLeft / maxX));
+            } else {
               const maxScroll = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
-              const fraction = Math.min(1, Math.max(0, window.scrollY / maxScroll));
-              const words = ((document.body.innerText || '').trim().split(/\\s+/).filter(Boolean)).length;
-              const wordOffset = Math.round(fraction * words);
-              post('progress', { fraction, wordOffset });
-            }, 180);
-          }, { passive: true });
+              fraction = Math.min(1, Math.max(0, window.scrollY / maxScroll));
+            }
+            const wordOffset = Math.round(fraction * words);
+            post('progress', { fraction, wordOffset });
+          }
+
+          let scrollTimer = null;
+          function scheduleProgress() {
+            userInteracted = true;
+            clearTimeout(scrollTimer);
+            scrollTimer = setTimeout(emitProgress, 180);
+          }
+
+          window.addEventListener('scroll', scheduleProgress, { passive: true });
+          if (IS_PAGINATED && document.body) {
+            document.body.addEventListener('scroll', scheduleProgress, { passive: true });
+          }
 
           window.addEventListener('DOMContentLoaded', function() {
             markHighlights();
             markNotes();
+            requestAnimationFrame(restorePosition);
+          });
+          window.addEventListener('load', function() {
             requestAnimationFrame(restorePosition);
           });
         })();

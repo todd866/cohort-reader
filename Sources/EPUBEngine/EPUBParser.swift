@@ -78,6 +78,54 @@ public struct EPUBDocument: Sendable {
         }
         return nil
     }
+
+    /// Extracts inner plain text of an XHTML element matching `#fragmentId` (`id="..."` or `name="..."`)
+    /// so footnotes and endnotes can preview in place without jumping chapters.
+    public func extractFootnotePreview(archivePath: String, fragmentId: String) -> String? {
+        let frag = fragmentId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !frag.isEmpty else { return nil }
+
+        let targetData: Data? = {
+            if let direct = resourceData(forArchivePath: archivePath)?.data {
+                return direct
+            }
+            let fileName = (archivePath as NSString).lastPathComponent
+            if !fileName.isEmpty,
+               let fallbackKey = resources.keys.first(where: { ($0 as NSString).lastPathComponent == fileName }) {
+                return resources[fallbackKey]
+            }
+            return nil
+        }()
+
+        guard let data = targetData,
+              let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
+            return nil
+        }
+
+        let escaped = NSRegularExpression.escapedPattern(for: frag)
+        let pattern = #"<([a-zA-Z0-9:_-]+)[^>]*\b(?:id|name)\s*=\s*["']"# + escaped + #"["'][^>]*>([\s\S]{1,4000})"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+              let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..<html.endIndex, in: html)),
+              let tagRange = Range(match.range(at: 1), in: html),
+              let bodyRange = Range(match.range(at: 2), in: html) else {
+            return nil
+        }
+
+        let tagName = String(html[tagRange])
+        let slice = String(html[bodyRange])
+        let snippetHTML: String
+        if let closeRange = slice.range(of: "</\(tagName)>", options: .caseInsensitive) {
+            snippetHTML = String(slice[..<closeRange.lowerBound])
+        } else {
+            snippetHTML = String(slice.prefix(900))
+        }
+        let plain = EPUBHTMLTextExtractor.extractPlainText(fromHTML: snippetHTML)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+([,.;:!?)\]])"#, with: "$1", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !plain.isEmpty else { return nil }
+        return plain.count > 600 ? String(plain.prefix(597)) + "..." : plain
+    }
 }
 
 public enum EPUBMimeType {

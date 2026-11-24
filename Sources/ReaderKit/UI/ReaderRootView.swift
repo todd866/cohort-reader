@@ -1,6 +1,9 @@
 import ReaderModel
 import SwiftUI
 import UniformTypeIdentifiers
+#if canImport(AppKit)
+import AppKit
+#endif
 
 public struct ReaderRootView: View {
     @Environment(\.readerSnapshotMode) private var isSnapshot
@@ -62,6 +65,79 @@ public struct ReaderRootView: View {
                 TypographySheet(typography: $vm.typography, onChange: { vm.saveTypography() })
             case .pdfSign:
                 PDFSignatureSheet(vm: vm)
+            case .footnote(let preview):
+                FootnotePreviewSheet(preview: preview, vm: vm)
+            }
+        }
+        .userActivity(
+            "md.cohort.reader.reading",
+            element: vm.activeBook.map {
+                "\($0.id):\(vm.activePDFURL != nil ? vm.activePDFPageIndex : vm.activeEPUBSpineIndex)"
+            }
+        ) { _, activity in
+            guard !isSnapshot, let info = vm.currentHandoffUserInfo() else {
+                activity.isEligibleForHandoff = false
+                return
+            }
+            activity.title = vm.activeBook?.title ?? "Reading in Cohort Reader"
+            activity.isEligibleForHandoff = true
+            activity.userInfo = info
+            activity.needsSave = true
+        }
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            var handled = false
+            for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                handled = true
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+                    guard let data,
+                          let url = URL(dataRepresentation: data, relativeTo: nil),
+                          url.isFileURL else { return }
+                    let ext = url.pathExtension.lowercased()
+                    guard ext == "pdf" || ext == "epub" else { return }
+                    Task { @MainActor in
+                        await vm.quickOpenExternalFile(from: url)
+                    }
+                }
+            }
+            return handled
+        }
+        .overlay(alignment: .bottom) {
+            if let toast = vm.toastMessage, !isSnapshot {
+                HStack(spacing: 10) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(ReaderPalette.cohortGreen)
+                    Text(toast)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(ReaderPalette.label)
+                        .lineLimit(2)
+                    #if os(macOS)
+                    if let savedPath = vm.lastSignedSavePath, toast.contains("Saved signed PDF") {
+                        Button("Reveal") {
+                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: savedPath)])
+                        }
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(ReaderPalette.accent)
+                        .buttonStyle(.plain)
+                    }
+                    #endif
+                    Button {
+                        vm.dismissToast()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(ReaderPalette.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Dismiss notification")
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(.regularMaterial, in: Capsule())
+                .overlay(Capsule().stroke(ReaderPalette.hairline, lineWidth: 1))
+                .shadow(color: Color.black.opacity(0.14), radius: 8, y: 3)
+                .padding(.bottom, 20)
+                .padding(.horizontal, 16)
             }
         }
         .background(
@@ -83,7 +159,7 @@ public struct ReaderRootView: View {
                 ) { result in
                     if case .success(let url) = result {
                         vm.lastSignedSavePath = url.path
-                        vm.lastHandoffMessage = "Saved signed PDF: \(url.lastPathComponent)"
+                        vm.showToast("Saved signed PDF: \(url.lastPathComponent)")
                         vm.clearPendingStamps()
                     }
                 }
@@ -264,6 +340,54 @@ public struct ReaderRootView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(tab.rawValue)
+    }
+}
+
+private struct FootnotePreviewSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let preview: FootnotePreview
+    @Bindable var vm: ReaderViewModel
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(preview.body)
+                        .font(.system(size: 16, design: .serif))
+                        .foregroundStyle(ReaderPalette.label)
+                        .lineSpacing(5)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(18)
+            }
+            .background(ReaderPalette.background)
+            .navigationTitle(preview.title)
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                if let doc = vm.activeEPUB {
+                    let baseHref = preview.archivePath.components(separatedBy: "#").first ?? preview.archivePath
+                    let baseName = (baseHref as NSString).lastPathComponent
+                    if let targetIdx = doc.spineHrefs.firstIndex(where: { $0 == baseHref || ($0 as NSString).lastPathComponent == baseName }),
+                       targetIdx != vm.activeEPUBSpineIndex {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Jump to Source") {
+                                Task {
+                                    await vm.selectEPUBSpine(targetIdx)
+                                    dismiss()
+                                }
+                            }
+                        }
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 

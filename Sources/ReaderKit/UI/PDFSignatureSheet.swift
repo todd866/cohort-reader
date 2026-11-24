@@ -139,6 +139,18 @@ public struct PDFSignatureSheet: View {
             } else {
                 dateAndTextPad
             }
+
+            if vm.isServerConnected {
+                HStack(spacing: 5) {
+                    Image(systemName: "checkmark.icloud")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ReaderPalette.cohortGreen)
+                    Text("Signatures synced with Home Library")
+                        .font(.system(size: 11))
+                        .foregroundStyle(ReaderPalette.secondary)
+                }
+                .padding(.top, 2)
+            }
         }
         .padding(16)
     }
@@ -314,6 +326,7 @@ public struct PDFSignatureSheet: View {
                 quickChip(todayStr)
                 quickChip(isoStr)
                 quickChip("✓")
+                quickChip("✗")
             }
 
             Divider()

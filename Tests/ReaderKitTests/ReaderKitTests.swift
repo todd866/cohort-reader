@@ -694,6 +694,167 @@ struct ReaderKitTests {
         #expect(vm.activePDFPageIndex == 0)
         #expect(vm.pdfJumpForwardStack == [1])
     }
+
+    @Test("EPUB paginated HTML composer, live highlight JS hook, and backward-compatible typography decoding")
+    func epubPaginationAndTypographyBackwardCompat() throws {
+        let legacyJSON = Data("""
+        {"theme":"Paper","fontFamily":"Serif","fontSize":19,"lineHeight":1.6,"marginWidth":"Standard","textAlignment":"Left"}
+        """.utf8)
+        let decoded = try JSONDecoder().decode(ReaderTypography.self, from: legacyJSON)
+        #expect(decoded.readingFlow == .scroll)
+
+        var pagedTypo = ReaderTypography.default
+        pagedTypo.readingFlow = .paginated
+        let html = EPUBHTMLComposer.composeChapterHTML(
+            rawXHTML: "<html><body><p>Hello world from chapter one.</p></body></html>",
+            typography: pagedTypo,
+            notes: [],
+            initialFraction: 0.25,
+            initialWordOffset: 2,
+            resolvedTheme: .paper,
+            highlights: []
+        )
+        #expect(html.contains("column-width"))
+        #expect(html.contains("scroll-snap-type: x mandatory"))
+        #expect(html.contains("IS_PAGINATED = true"))
+        #expect(html.contains("window.__cohortAddHighlight"))
+
+        let js = EPUBHTMLComposer.typographyUpdateJS(typography: pagedTypo, resolvedTheme: .sepia)
+        #expect(js.contains("window.__cohortApplyTypography"))
+    }
+
+    @Test("EPUB footnote extraction finds target fragment and strips markup")
+    func epubFootnotePreviewExtraction() {
+        let xhtml = """
+        <html><body>
+          <aside id="fn1" epub:type="footnote"><p>See <em>Caro</em>, The Power Broker (1974), p. 412.</p></aside>
+        </body></html>
+        """
+        let doc = EPUBDocument(
+            title: "Sample",
+            author: "Tester",
+            canonicalId: nil,
+            language: "en",
+            opfDir: "OEBPS",
+            coverHref: nil,
+            spineHrefs: ["OEBPS/ch1.xhtml"],
+            toc: [],
+            resources: ["OEBPS/ch1.xhtml": Data(xhtml.utf8)]
+        )
+        let preview = doc.extractFootnotePreview(archivePath: "OEBPS/ch1.xhtml", fragmentId: "fn1")
+        #expect(preview == "See Caro, The Power Broker (1974), p. 412.")
+    }
+
+    @Test("ReaderStore highlight tombstones and two-way remote merge")
+    func storeHighlightTombstonesAndMerge() async throws {
+        let store = try ReaderStore(dbPath: ":memory:")
+        let h1 = ReadingHighlight(id: "hl-1", bookId: "b1", bookTitle: "Book", spine: 0, quote: "First quote")
+        let h2 = ReadingHighlight(id: "hl-2", bookId: "b1", bookTitle: "Book", spine: 1, quote: "Second quote")
+        try await store.saveHighlight(h1)
+        try await store.saveHighlight(h2)
+        try await store.deleteHighlight(id: "hl-1")
+
+        let deletedIds = try await store.listDeletedHighlightIds()
+        #expect(deletedIds == ["hl-1"])
+
+        let remoteKeep = ReadingHighlight(id: "hl-3", bookId: "b1", bookTitle: "Book", spine: 2, quote: "From other device")
+        try await store.mergeRemoteHighlights([h1, remoteKeep], deletedIds: ["hl-2"])
+
+        let merged = try await store.listHighlights(bookId: "b1")
+        #expect(merged.map(\.id) == ["hl-3"])
+        let allDeleted = try await store.listDeletedHighlightIds()
+        #expect(allDeleted.contains("hl-1"))
+        #expect(allDeleted.contains("hl-2"))
+    }
+
+    @Test("HomeLibraryClient syncHighlights and uploadToInbox")
+    func clientSyncHighlightsAndInbox() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockHomeURLProtocol.self]
+        let session = URLSession(configuration: config)
+
+        let local = [ReadingHighlight(id: "hl-local", bookId: "b1", bookTitle: "Book", spine: 0, quote: "Local line")]
+        let synced = try await HomeLibraryClient.syncHighlights(
+            baseURL: "https://mock.home.local",
+            highlights: local,
+            deletedIds: ["hl-old"],
+            session: session
+        )
+        #expect(synced.deletedIds.contains("hl-old"))
+        #expect(synced.highlights.contains(where: { $0.id == "hl-remote" }))
+
+        let uploaded = try await HomeLibraryClient.uploadToInbox(
+            baseURL: "https://mock.home.local",
+            data: Data("%PDF-1.4\n%%EOF\n".utf8),
+            filename: "contract.pdf",
+            title: "Signed Contract",
+            author: "Test Author",
+            session: session
+        )
+        #expect(uploaded.id == "inbox-1234abcd")
+        #expect(uploaded.format == .pdf)
+        #expect(uploaded.shelfNames == ["Synced Inbox"])
+    }
+
+    @Test("ReaderViewModel cold-launch external open guard, tab cycling, and Handoff continuity")
+    @MainActor
+    func vmLaunchGuardTabsAndHandoff() async throws {
+        let dbTmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vm-eco-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dbTmp) }
+        try FileManager.default.createDirectory(at: dbTmp, withIntermediateDirectories: true)
+
+        var box = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let pdfA = dbTmp.appendingPathComponent("alpha.pdf")
+        let pdfB = dbTmp.appendingPathComponent("beta.pdf")
+        for (url, label) in [(pdfA, "Alpha Page 1"), (pdfB, "Beta Page 1")] {
+            let ctx = try #require(CGContext(url as CFURL, mediaBox: &box, nil))
+            ctx.beginPDFPage(nil)
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: label))
+            ctx.textPosition = CGPoint(x: 72, y: 700)
+            CTLineDraw(line, ctx)
+            ctx.endPDFPage()
+            ctx.beginPDFPage(nil)
+            let line2 = CTLineCreateWithAttributedString(NSAttributedString(string: "\(label) Page 2"))
+            ctx.textPosition = CGPoint(x: 72, y: 700)
+            CTLineDraw(line2, ctx)
+            ctx.endPDFPage()
+            ctx.closePDF()
+        }
+
+        let store = try ReaderStore(dbPath: dbTmp.appendingPathComponent("vm.sqlite").path, cacheRoot: dbTmp)
+        let sigURL = dbTmp.appendingPathComponent("sigs.json")
+        let vm = ReaderViewModel(
+            store: store,
+            defaults: UserDefaults(suiteName: "cohort-eco-vm-\(UUID().uuidString)")!,
+            signatureStoreURL: sigURL
+        )
+
+        // Opening an external file before bootstrap finishes must prevent sample Frankenstein from stealing focus
+        await vm.quickOpenExternalFile(from: pdfA)
+        await vm.bootstrap(loadSampleBook: true, runNetworkSync: false)
+        #expect(vm.activePDFURL == pdfA)
+        #expect(vm.selectedTab == .read)
+
+        // Open a second tab and cycle next/prev
+        await vm.quickOpenExternalFile(from: pdfB)
+        #expect(vm.openTabs.count == 2)
+        #expect(vm.activePDFURL == pdfB)
+        await vm.selectAdjacentTab(delta: 1)
+        #expect(vm.activePDFURL == pdfA)
+        await vm.selectAdjacentTab(delta: -1)
+        #expect(vm.activePDFURL == pdfB)
+
+        // Handoff to an existing library book navigates directly to the handed-off spine
+        await vm.handleHandoffActivity([
+            "bookId": "gutenberg-84",
+            "title": "Frankenstein",
+            "spine": 1,
+            "fraction": 0.5,
+        ])
+        #expect(vm.activeBook?.id == "gutenberg-84")
+        #expect(vm.activeEPUBSpineIndex == 1)
+    }
 }
 
 private final class MockManifoldURLProtocol: URLProtocol, @unchecked Sendable {
@@ -793,6 +954,36 @@ private final class MockHomeURLProtocol: URLProtocol, @unchecked Sendable {
                   "bytes": 2400000,
                   "hasCover": true
                 }
+              }
+            }
+            """.utf8)
+        } else if path == "/api/highlights" {
+            body = Data("""
+            {
+              "highlights": [{
+                "id": "hl-remote",
+                "bookId": "b1",
+                "bookTitle": "Book",
+                "spine": 1,
+                "quote": "Remote quote",
+                "note": "",
+                "sentToCohort": false,
+                "createdAt": "2026-11-24T08:00:00Z"
+              }],
+              "deletedIds": ["hl-old"]
+            }
+            """.utf8)
+        } else if path == "/api/inbox" {
+            body = Data("""
+            {
+              "item": {
+                "id": "inbox-1234abcd",
+                "title": "Signed Contract",
+                "author": "Test Author",
+                "format": "pdf",
+                "shelves": ["Synced Inbox"],
+                "bytes": 16,
+                "hasCover": false
               }
             }
             """.utf8)

@@ -134,6 +134,11 @@ public actor ReaderStore {
             created_ts REAL NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS deleted_highlights (
+            id TEXT PRIMARY KEY,
+            deleted_ts REAL NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS pending_sync_outbox (
             id TEXT PRIMARY KEY,
             payload_json TEXT NOT NULL,
@@ -509,10 +514,91 @@ public actor ReaderStore {
     }
 
     public func deleteHighlight(id: String) throws {
-        let stmt = try prepare("DELETE FROM highlights WHERE id = ?;")
+        try exec("BEGIN IMMEDIATE;")
+        do {
+            let stmt = try prepare("DELETE FROM highlights WHERE id = ?;")
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, 1, id)
+            try stepDone(stmt)
+
+            let tomb = try prepare("""
+            INSERT INTO deleted_highlights (id, deleted_ts) VALUES (?, ?)
+            ON CONFLICT(id) DO UPDATE SET deleted_ts = excluded.deleted_ts;
+            """)
+            defer { sqlite3_finalize(tomb) }
+            bindText(tomb, 1, id)
+            sqlite3_bind_double(tomb, 2, Date().timeIntervalSince1970)
+            try stepDone(tomb)
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
+    }
+
+    public func listAllHighlights() throws -> [ReadingHighlight] {
+        try listHighlights(bookId: nil)
+    }
+
+    public func listDeletedHighlightIds() throws -> [String] {
+        let stmt = try prepare("SELECT id FROM deleted_highlights;")
         defer { sqlite3_finalize(stmt) }
-        bindText(stmt, 1, id)
-        try stepDone(stmt)
+        var out: [String] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            out.append(columnText(stmt, 0))
+        }
+        return out
+    }
+
+    public func mergeRemoteHighlights(_ items: [ReadingHighlight], deletedIds: [String]) throws {
+        let deletedSet = Set(deletedIds)
+        try exec("BEGIN IMMEDIATE;")
+        do {
+            for did in deletedIds {
+                let del = try prepare("DELETE FROM highlights WHERE id = ?;")
+                defer { sqlite3_finalize(del) }
+                bindText(del, 1, did)
+                try stepDone(del)
+
+                let tomb = try prepare("""
+                INSERT INTO deleted_highlights (id, deleted_ts) VALUES (?, ?)
+                ON CONFLICT(id) DO UPDATE SET deleted_ts = MAX(deleted_ts, excluded.deleted_ts);
+                """)
+                defer { sqlite3_finalize(tomb) }
+                bindText(tomb, 1, did)
+                sqlite3_bind_double(tomb, 2, Date().timeIntervalSince1970)
+                try stepDone(tomb)
+            }
+
+            let localDeleted = Set(try listDeletedHighlightIds())
+            for h in items {
+                if deletedSet.contains(h.id) || localDeleted.contains(h.id) {
+                    continue
+                }
+                let ins = try prepare("""
+                INSERT INTO highlights (id, book_id, canonical_id, book_title, spine, quote, note, sent_to_cohort, created_ts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    note = excluded.note,
+                    sent_to_cohort = MAX(highlights.sent_to_cohort, excluded.sent_to_cohort);
+                """)
+                defer { sqlite3_finalize(ins) }
+                bindText(ins, 1, h.id)
+                bindText(ins, 2, h.bookId)
+                bindOptionalText(ins, 3, h.canonicalId)
+                bindText(ins, 4, h.bookTitle)
+                sqlite3_bind_int(ins, 5, Int32(h.spine))
+                bindText(ins, 6, h.quote)
+                bindText(ins, 7, h.note)
+                sqlite3_bind_int(ins, 8, h.sentToCohort ? 1 : 0)
+                sqlite3_bind_double(ins, 9, h.createdAt.timeIntervalSince1970)
+                try stepDone(ins)
+            }
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
     }
 
     // MARK: - Offline File Cache (Excluded from iCloud Device Backup)

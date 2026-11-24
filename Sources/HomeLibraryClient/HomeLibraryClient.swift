@@ -141,13 +141,22 @@ private struct WireBookItem: Decodable {
 }
 
 public enum HomeLibraryClient {
-    private static func makeDecoder() -> JSONDecoder {
+    public static func makeDecoder() -> JSONDecoder {
         let dec = JSONDecoder()
-        dec.dateDecodingStrategy = .iso8601
+        dec.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let str = try container.decode(String.self)
+            let frac = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+            let plain = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
+            if let d = (try? frac.parse(str)) ?? (try? plain.parse(str)) {
+                return d
+            }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid ISO8601 date: \(str)")
+        }
         return dec
     }
 
-    private static func makeEncoder() -> JSONEncoder {
+    public static func makeEncoder() -> JSONEncoder {
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
         return enc
@@ -338,6 +347,83 @@ public enum HomeLibraryClient {
             out[wid] = wire.toBookItem()
         }
         return out
+    }
+
+    public static func syncHighlights(
+        baseURL: String,
+        highlights: [ReadingHighlight],
+        deletedIds: [String],
+        session: URLSession = .shared
+    ) async throws -> (highlights: [ReadingHighlight], deletedIds: [String]) {
+        let clean = ReaderKeychain.normalizedServer(baseURL)
+        guard let url = URL(string: "\(clean)/api/highlights") else { throw HomeLibraryError.invalidURL }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        struct Payload: Encodable {
+            var highlights: [ReadingHighlight]
+            var deletedIds: [String]
+        }
+        struct Response: Decodable {
+            var highlights: [ReadingHighlight]
+            var deletedIds: [String]
+        }
+        req.httpBody = try makeEncoder().encode(Payload(highlights: highlights, deletedIds: deletedIds))
+        req.timeoutInterval = 15
+        let (data, resp) = try await session.data(for: req)
+        try checkHTTP(resp)
+        let decoded = try makeDecoder().decode(Response.self, from: data)
+        return (decoded.highlights, decoded.deletedIds)
+    }
+
+    public static func syncSignaturesJSON(
+        baseURL: String,
+        payload: Data,
+        session: URLSession = .shared
+    ) async throws -> Data {
+        let clean = ReaderKeychain.normalizedServer(baseURL)
+        guard let url = URL(string: "\(clean)/api/signatures") else { throw HomeLibraryError.invalidURL }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = payload
+        req.timeoutInterval = 15
+        let (data, resp) = try await session.data(for: req)
+        try checkHTTP(resp)
+        return data
+    }
+
+    public static func uploadToInbox(
+        baseURL: String,
+        data fileData: Data,
+        filename: String,
+        title: String,
+        author: String,
+        canonicalId: String? = nil,
+        session: URLSession = .shared
+    ) async throws -> BookItem {
+        let clean = ReaderKeychain.normalizedServer(baseURL)
+        guard let url = URL(string: "\(clean)/api/inbox") else { throw HomeLibraryError.invalidURL }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        let isEPUB = filename.lowercased().hasSuffix(".epub")
+        req.setValue(isEPUB ? "application/epub+zip" : "application/pdf", forHTTPHeaderField: "Content-Type")
+        func encHeader(_ s: String) -> String {
+            s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s
+        }
+        req.setValue(encHeader(filename), forHTTPHeaderField: "X-Filename")
+        req.setValue(encHeader(title), forHTTPHeaderField: "X-Title")
+        req.setValue(encHeader(author), forHTTPHeaderField: "X-Author")
+        if let canonicalId, !canonicalId.isEmpty {
+            req.setValue(encHeader(canonicalId), forHTTPHeaderField: "X-Canonical-Id")
+        }
+        req.httpBody = fileData
+        req.timeoutInterval = 60
+        let (respData, resp) = try await session.data(for: req)
+        try checkHTTP(resp)
+        struct InboxResp: Decodable { var item: WireBookItem }
+        let decoded = try makeDecoder().decode(InboxResp.self, from: respData)
+        return decoded.item.toBookItem()
     }
 
     private static func checkHTTP(_ resp: URLResponse) throws {

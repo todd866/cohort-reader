@@ -501,6 +501,11 @@ public enum ReaderTextAlignment: String, Codable, Sendable, CaseIterable {
     }
 }
 
+public enum EPUBReadingFlow: String, Codable, Sendable, CaseIterable {
+    case scroll = "Scroll"
+    case paginated = "Pages"
+}
+
 public enum ShelfSortOrder: String, Codable, Sendable, CaseIterable {
     case recent = "Recent"
     case title = "Title"
@@ -515,6 +520,7 @@ public struct ReaderTypography: Codable, Sendable, Hashable {
     public var lineHeight: Double
     public var marginWidth: ReaderMarginWidth
     public var textAlignment: ReaderTextAlignment
+    public var readingFlow: EPUBReadingFlow
 
     public static let `default` = ReaderTypography(
         theme: .auto,
@@ -522,7 +528,8 @@ public struct ReaderTypography: Codable, Sendable, Hashable {
         fontSize: 18,
         lineHeight: 1.58,
         marginWidth: .standard,
-        textAlignment: .left
+        textAlignment: .left,
+        readingFlow: .scroll
     )
 
     public init(
@@ -531,7 +538,8 @@ public struct ReaderTypography: Codable, Sendable, Hashable {
         fontSize: Double,
         lineHeight: Double,
         marginWidth: ReaderMarginWidth = .standard,
-        textAlignment: ReaderTextAlignment = .left
+        textAlignment: ReaderTextAlignment = .left,
+        readingFlow: EPUBReadingFlow = .scroll
     ) {
         self.theme = theme
         self.fontFamily = fontFamily
@@ -539,6 +547,7 @@ public struct ReaderTypography: Codable, Sendable, Hashable {
         self.lineHeight = min(max(lineHeight, 1.2), 2.1)
         self.marginWidth = marginWidth
         self.textAlignment = textAlignment
+        self.readingFlow = readingFlow
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -548,6 +557,7 @@ public struct ReaderTypography: Codable, Sendable, Hashable {
         case lineHeight
         case marginWidth
         case textAlignment
+        case readingFlow
     }
 
     public init(from decoder: Decoder) throws {
@@ -558,13 +568,15 @@ public struct ReaderTypography: Codable, Sendable, Hashable {
         let lineHeight = try c.decodeIfPresent(Double.self, forKey: .lineHeight) ?? 1.58
         let marginWidth = try c.decodeIfPresent(ReaderMarginWidth.self, forKey: .marginWidth) ?? .standard
         let textAlignment = try c.decodeIfPresent(ReaderTextAlignment.self, forKey: .textAlignment) ?? .left
+        let readingFlow = try c.decodeIfPresent(EPUBReadingFlow.self, forKey: .readingFlow) ?? .scroll
         self.init(
             theme: theme,
             fontFamily: fontFamily,
             fontSize: fontSize,
             lineHeight: lineHeight,
             marginWidth: marginWidth,
-            textAlignment: textAlignment
+            textAlignment: textAlignment,
+            readingFlow: readingFlow
         )
     }
 }
