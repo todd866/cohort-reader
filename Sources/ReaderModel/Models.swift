@@ -26,6 +26,8 @@ public struct ReadingLocator: Codable, Sendable, Hashable {
     public var fraction: Double
     public var wordOffset: Int?
     public var pageIndex: Int?
+    public var spineCount: Int?
+    public var overallProgress: Double?
     public var updatedAt: Date
 
     public init(
@@ -33,13 +35,27 @@ public struct ReadingLocator: Codable, Sendable, Hashable {
         fraction: Double = 0,
         wordOffset: Int? = nil,
         pageIndex: Int? = nil,
+        spineCount: Int? = nil,
+        overallProgress: Double? = nil,
         updatedAt: Date = Date()
     ) {
         self.spine = max(0, spine)
         self.fraction = min(max(fraction, 0), 1)
         self.wordOffset = wordOffset
         self.pageIndex = pageIndex
+        self.spineCount = spineCount
+        self.overallProgress = overallProgress.map { min(max($0, 0), 1) }
         self.updatedAt = updatedAt
+    }
+
+    public var effectiveProgress: Double {
+        if let overallProgress {
+            return min(max(overallProgress, 0), 1)
+        }
+        if let spineCount, spineCount > 0 {
+            return min(max((Double(spine) + fraction) / Double(spineCount), 0), 1)
+        }
+        return fraction
     }
 
     /// Monotonic Last-Write-Wins merge matching paperlibrary-away's locator contract.
@@ -50,6 +66,7 @@ public struct ReadingLocator: Codable, Sendable, Hashable {
             return remote
         }
         if remote.updatedAt == local.updatedAt {
+            if remote.effectiveProgress > local.effectiveProgress { return remote }
             if remote.spine > local.spine { return remote }
             if remote.spine == local.spine && remote.fraction > local.fraction { return remote }
         }
@@ -136,9 +153,19 @@ public struct BookItem: Identifiable, Codable, Sendable, Hashable {
         self.lastOpenedAt = lastOpenedAt
     }
 
+    public var effectiveProgress: Double {
+        locator?.effectiveProgress ?? 0
+    }
+
+    public var isInProgress: Bool {
+        guard let loc = locator else { return false }
+        let hasActivity = loc.spine > 0 || loc.fraction > 0 || (loc.overallProgress ?? 0) > 0
+        return hasActivity && effectiveProgress < 0.98
+    }
+
     public var progressPercent: Int {
-        guard let loc = locator else { return 0 }
-        return Int((min(max(loc.fraction, 0), 1) * 100).rounded())
+        guard locator != nil else { return 0 }
+        return Int((effectiveProgress * 100).rounded())
     }
 
     public var shortCitation: String {
@@ -550,6 +577,8 @@ public struct PendingProgressEvent: Codable, Sendable, Hashable {
     public var fraction: Double
     public var wordOffset: Int?
     public var pageIndex: Int?
+    public var spineCount: Int?
+    public var overallProgress: Double?
     public var updatedAt: Date
     public var readingSeconds: Int
 
@@ -561,6 +590,8 @@ public struct PendingProgressEvent: Codable, Sendable, Hashable {
         fraction: Double,
         wordOffset: Int? = nil,
         pageIndex: Int? = nil,
+        spineCount: Int? = nil,
+        overallProgress: Double? = nil,
         updatedAt: Date = Date(),
         readingSeconds: Int = 0
     ) {
@@ -571,6 +602,8 @@ public struct PendingProgressEvent: Codable, Sendable, Hashable {
         self.fraction = fraction
         self.wordOffset = wordOffset
         self.pageIndex = pageIndex
+        self.spineCount = spineCount
+        self.overallProgress = overallProgress
         self.updatedAt = updatedAt
         self.readingSeconds = readingSeconds
     }

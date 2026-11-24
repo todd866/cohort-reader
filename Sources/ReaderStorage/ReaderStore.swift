@@ -101,6 +101,8 @@ public actor ReaderStore {
             fraction REAL NOT NULL,
             word_offset INTEGER,
             page_index INTEGER,
+            spine_count INTEGER,
+            overall_progress REAL,
             updated_ts REAL NOT NULL
         );
 
@@ -149,6 +151,8 @@ public actor ReaderStore {
             created_ts REAL NOT NULL
         );
         """)
+        try? Self.exec(db, "ALTER TABLE locators ADD COLUMN spine_count INTEGER;")
+        try? Self.exec(db, "ALTER TABLE locators ADD COLUMN overall_progress REAL;")
     }
 
     // MARK: - Books & FTS5
@@ -246,11 +250,12 @@ public actor ReaderStore {
         SELECT b.id, b.canonical_id, b.title, b.author, b.year, b.format, b.source, b.genre, b.subgenre,
                b.summary, b.shelf_json, b.bytes, b.is_offline, b.local_path, b.open_access_url, b.epub_url,
                b.has_cover, b.notes_version, b.point_x, b.point_y, b.last_opened_ts,
-               l.spine, l.fraction, l.word_offset, l.page_index, l.updated_ts
+               l.spine, l.fraction, l.word_offset, l.page_index, l.updated_ts,
+               l.spine_count, l.overall_progress
         FROM books b
         LEFT JOIN locators l ON l.book_id = b.id
         ORDER BY
-            CASE WHEN l.fraction IS NOT NULL AND l.fraction > 0 AND l.fraction < 0.98 THEN 0 ELSE 1 END ASC,
+            CASE WHEN (l.spine > 0 OR l.fraction > 0 OR COALESCE(l.overall_progress, 0) > 0) AND COALESCE(l.overall_progress, l.fraction, 0) < 0.98 THEN 0 ELSE 1 END ASC,
             COALESCE(l.updated_ts, b.last_opened_ts, 0) DESC,
             b.is_offline DESC,
             CASE b.format WHEN 'epub' THEN 0 WHEN 'pdf' THEN 1 ELSE 2 END ASC,
@@ -279,7 +284,8 @@ public actor ReaderStore {
         SELECT b.id, b.canonical_id, b.title, b.author, b.year, b.format, b.source, b.genre, b.subgenre,
                b.summary, b.shelf_json, b.bytes, b.is_offline, b.local_path, b.open_access_url, b.epub_url,
                b.has_cover, b.notes_version, b.point_x, b.point_y, b.last_opened_ts,
-               l.spine, l.fraction, l.word_offset, l.page_index, l.updated_ts
+               l.spine, l.fraction, l.word_offset, l.page_index, l.updated_ts,
+               l.spine_count, l.overall_progress
         FROM books_fts f
         JOIN books b ON b.id = f.book_id
         LEFT JOIN locators l ON l.book_id = b.id
@@ -319,6 +325,8 @@ public actor ReaderStore {
                     fraction: merged.fraction,
                     wordOffset: merged.wordOffset,
                     pageIndex: merged.pageIndex,
+                    spineCount: merged.spineCount,
+                    overallProgress: merged.overallProgress,
                     updatedAt: merged.updatedAt,
                     readingSeconds: readingSeconds
                 )
@@ -341,7 +349,7 @@ public actor ReaderStore {
 
     @discardableResult
     private func mergeLocatorInternal(bookId: String, remote: ReadingLocator) throws -> ReadingLocator {
-        let sel = try prepare("SELECT spine, fraction, word_offset, page_index, updated_ts FROM locators WHERE book_id = ?;")
+        let sel = try prepare("SELECT spine, fraction, word_offset, page_index, updated_ts, spine_count, overall_progress FROM locators WHERE book_id = ?;")
         defer { sqlite3_finalize(sel) }
         bindText(sel, 1, bookId)
         var existing: ReadingLocator?
@@ -351,19 +359,23 @@ public actor ReaderStore {
                 fraction: sqlite3_column_double(sel, 1),
                 wordOffset: sqlite3_column_type(sel, 2) == SQLITE_NULL ? nil : Int(sqlite3_column_int(sel, 2)),
                 pageIndex: sqlite3_column_type(sel, 3) == SQLITE_NULL ? nil : Int(sqlite3_column_int(sel, 3)),
+                spineCount: sqlite3_column_type(sel, 5) == SQLITE_NULL ? nil : Int(sqlite3_column_int(sel, 5)),
+                overallProgress: sqlite3_column_type(sel, 6) == SQLITE_NULL ? nil : sqlite3_column_double(sel, 6),
                 updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(sel, 4))
             )
         }
         let chosen = ReadingLocator.adoptIfNewer(local: existing, remote: remote) ?? remote
         let up = try prepare("""
-        INSERT INTO locators (book_id, spine, fraction, word_offset, page_index, updated_ts)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO locators (book_id, spine, fraction, word_offset, page_index, updated_ts, spine_count, overall_progress)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(book_id) DO UPDATE SET
             spine = excluded.spine,
             fraction = excluded.fraction,
             word_offset = excluded.word_offset,
             page_index = excluded.page_index,
-            updated_ts = excluded.updated_ts;
+            updated_ts = excluded.updated_ts,
+            spine_count = COALESCE(excluded.spine_count, locators.spine_count),
+            overall_progress = excluded.overall_progress;
         """)
         defer { sqlite3_finalize(up) }
         bindText(up, 1, bookId)
@@ -372,6 +384,8 @@ public actor ReaderStore {
         bindOptionalInt(up, 4, chosen.wordOffset)
         bindOptionalInt(up, 5, chosen.pageIndex)
         sqlite3_bind_double(up, 6, chosen.updatedAt.timeIntervalSince1970)
+        bindOptionalInt(up, 7, chosen.spineCount)
+        bindOptionalDouble(up, 8, chosen.overallProgress)
         try stepDone(up)
         return chosen
     }
@@ -712,6 +726,8 @@ public actor ReaderStore {
                 fraction: sqlite3_column_double(stmt, 22),
                 wordOffset: sqlite3_column_type(stmt, 23) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 23)),
                 pageIndex: sqlite3_column_type(stmt, 24) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 24)),
+                spineCount: sqlite3_column_type(stmt, 26) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 26)),
+                overallProgress: sqlite3_column_type(stmt, 27) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 27),
                 updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 25))
             )
         }

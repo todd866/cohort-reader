@@ -99,7 +99,7 @@ public struct ShelfView: View {
                 .accessibilityLabel(vm.shelfUsesListLayout ? "Show cover grid" : "Show list")
 
                 Button {
-                    vm.isSettingsPresented = true
+                    vm.activeSheet = .settings
                 } label: {
                     ZStack(alignment: .topTrailing) {
                         Image(systemName: "gearshape")
@@ -144,9 +144,9 @@ public struct ShelfView: View {
 
             Divider()
 
-            ReaderScrollContainer {
-                GeometryReader { geo in
-                    let cols = gridColumns(for: geo.size.width)
+            GeometryReader { geo in
+                let cols = gridColumns(for: geo.size.width)
+                ReaderScrollContainer {
                     if vm.activeShelfFilter == "For You" {
                         discoveryGridContent(colCount: cols, totalWidth: geo.size.width)
                     } else if vm.activeShelfFilter == "Saved" {
@@ -155,9 +155,9 @@ public struct ShelfView: View {
                         libraryContent(colCount: cols, totalWidth: geo.size.width)
                     }
                 }
-            }
-            .refreshable {
-                await vm.syncServerCatalog()
+                .refreshable {
+                    await vm.syncServerCatalog()
+                }
             }
         }
         .background(ReaderPalette.background)

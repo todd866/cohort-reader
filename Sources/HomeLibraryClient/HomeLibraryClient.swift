@@ -88,6 +88,10 @@ private struct WireSearchResponse: Decodable {
     var items: [WireBookItem]
 }
 
+private struct WireMatchResponse: Decodable {
+    var matches: [String: WireBookItem]
+}
+
 private struct WireNotesResponse: Decodable {
     var notes: [MarginNote]
 }
@@ -303,6 +307,37 @@ public enum HomeLibraryClient {
         try checkHTTP(resp)
         let ack = try? JSONDecoder().decode(WireProgressResponse.self, from: data)
         return ack?.accepted ?? events.count
+    }
+
+    public static func matchWorks(
+        baseURL: String,
+        works: [(workId: String, title: String, creator: String)],
+        session: URLSession = .shared
+    ) async throws -> [String: BookItem] {
+        guard !works.isEmpty else { return [:] }
+        let clean = ReaderKeychain.normalizedServer(baseURL)
+        guard let url = URL(string: "\(clean)/api/match") else { throw HomeLibraryError.invalidURL }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        struct WireWorkQuery: Encodable {
+            var workId: String
+            var title: String
+            var creator: String
+        }
+        struct Payload: Encodable { var works: [WireWorkQuery] }
+        let body = Payload(works: works.map { WireWorkQuery(workId: $0.workId, title: $0.title, creator: $0.creator) })
+        req.httpBody = try makeEncoder().encode(body)
+        req.timeoutInterval = 15
+        let (data, resp) = try await session.data(for: req)
+        try checkHTTP(resp)
+        let decoded = try makeDecoder().decode(WireMatchResponse.self, from: data)
+        var out: [String: BookItem] = [:]
+        out.reserveCapacity(decoded.matches.count)
+        for (wid, wire) in decoded.matches {
+            out[wid] = wire.toBookItem()
+        }
+        return out
     }
 
     private static func checkHTTP(_ resp: URLResponse) throws {

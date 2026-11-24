@@ -362,6 +362,156 @@ struct ReaderKitTests {
         vm.runInBookSearch()
         #expect(vm.inBookMatches.contains(where: { $0.snippet.contains("Petersburgh") }))
     }
+
+    @Test("Spine locator progress, SQLite persistence, recency-first auto-download, author-title matching, and resource lookup")
+    @MainActor
+    func progressRecencyMatchingAndEPUBResources() async throws {
+        // 1. Spine-aware ReadingLocator & BookItem progress metrics
+        let olderDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let newerDate = Date(timeIntervalSince1970: 1_700_100_000)
+        let senateLoc = ReadingLocator(
+            spine: 19,
+            fraction: 0.0,
+            spineCount: 68,
+            updatedAt: newerDate
+        )
+        #expect(abs(senateLoc.effectiveProgress - (19.0 / 68.0)) < 0.0001)
+        let explicitLoc = ReadingLocator(
+            spine: 19,
+            fraction: 0.0,
+            spineCount: 68,
+            overallProgress: 0.294,
+            updatedAt: newerDate
+        )
+        let senateBook = BookItem(
+            id: "md5-629083e41a7eaf7c11e11eb3d301efbb",
+            title: "Master of the Senate",
+            author: "Robert A. Caro",
+            format: .epub,
+            source: .homeServer,
+            bytes: 6_638_129,
+            locator: explicitLoc
+        )
+        #expect(senateBook.isInProgress == true)
+        #expect(senateBook.progressPercent == 29)
+
+        let staleLoc = ReadingLocator(spine: 0, fraction: 0.05, spineCount: 68, overallProgress: 0.01, updatedAt: olderDate)
+        let adopted = ReadingLocator.adoptIfNewer(local: staleLoc, remote: senateLoc)
+        #expect(adopted?.spine == 19)
+        #expect(adopted?.spineCount == 68)
+
+        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent("reader-loc-mig-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        let store = try ReaderStore(dbPath: tmpDir.appendingPathComponent("mig.sqlite").path, cacheRoot: tmpDir)
+        try await store.upsertBooks([senateBook])
+        _ = try await store.saveLocator(bookId: senateBook.id, locator: explicitLoc, enqueueSync: false)
+        let reloaded = try await store.listBooks()
+        let savedSenate = try #require(reloaded.first(where: { $0.id == senateBook.id }))
+        #expect(savedSenate.locator?.spine == 19)
+        #expect(savedSenate.locator?.spineCount == 68)
+        #expect(abs((savedSenate.locator?.overallProgress ?? 0) - 0.294) < 0.001)
+        #expect(savedSenate.isInProgress == true)
+
+        // 2. prioritizedAutoDownloadCandidates puts newest in-progress book first
+        let olderActive = BookItem(
+            id: "older-active",
+            title: "Older Read",
+            author: "A",
+            format: .epub,
+            source: .homeServer,
+            bytes: 1_500_000,
+            locator: ReadingLocator(spine: 5, fraction: 0.1, spineCount: 30, updatedAt: olderDate)
+        )
+        let newerActive = BookItem(
+            id: "newer-active",
+            title: "Master of the Senate",
+            author: "Robert A. Caro",
+            format: .epub,
+            source: .homeServer,
+            bytes: 6_638_129,
+            locator: senateLoc
+        )
+        let untouchedSmall = BookItem(
+            id: "untouched-small",
+            title: "Tiny Book",
+            author: "B",
+            format: .epub,
+            source: .homeServer,
+            bytes: 200_000,
+            notesVersion: "v1"
+        )
+        let order = ReaderViewModel.prioritizedAutoDownloadCandidates(from: [untouchedSmall, olderActive, newerActive])
+        #expect(order.map(\.id) == ["newer-active", "older-active", "untouched-small"])
+
+        // 3. Author-prefixed title matching
+        #expect(ReaderViewModel.normalizedTitleKey("David Graeber — Debt The First 5,000 Years") == "debt the first 5 000 years")
+        let vm = ReaderViewModel(store: store, defaults: UserDefaults(suiteName: "cohort-reader-match-\(UUID().uuidString)")!)
+        vm.books = [
+            BookItem(
+                id: "md5-debt",
+                title: "David Graeber — Debt The First 5,000 Years",
+                author: "David Graeber",
+                format: .epub,
+                source: .homeServer
+            ),
+        ]
+        let debtWork = ManifoldReaderWork(
+            workId: "isbn:9781612191294",
+            title: "Debt: The First 5,000 Years",
+            creator: "David Graeber",
+            year: 2011,
+            kind: "Nonfiction",
+            format: .epub,
+            summary: "History of debt and money.",
+            shard: "00",
+            x: 0.2,
+            y: 0.3,
+            vec32: Array(repeating: 0, count: 32)
+        )
+        #expect(vm.ownedBook(for: debtWork)?.id == "md5-debt")
+
+        // 4. Root-OPF leading-slash resource lookup
+        let doc = EPUBDocument(
+            title: "Test",
+            author: "A",
+            canonicalId: nil,
+            language: "en",
+            opfDir: "",
+            coverHref: "images/cover.jpg",
+            spineHrefs: ["ch1.xhtml"],
+            toc: [],
+            resources: [
+                "ch1.xhtml": Data("<html><body><p>Hello</p></body></html>".utf8),
+                "images/cover.jpg": Data([0xFF, 0xD8, 0xFF]),
+            ]
+        )
+        let img = try #require(doc.resourceData(forArchivePath: "//images/cover.jpg"))
+        #expect(img.data == Data([0xFF, 0xD8, 0xFF]))
+        #expect(img.mimeType == "image/jpeg")
+
+        // 5. HomeLibraryClient.matchWorks round-trip
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockHomeURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let matched = try await HomeLibraryClient.matchWorks(
+            baseURL: "https://mock.local",
+            works: [(workId: "isbn:9780300078152", title: "Seeing Like a State", creator: "James C. Scott")],
+            session: session
+        )
+        #expect(matched["isbn:9780300078152"]?.id == "md5-scott")
+
+        // 6. Optional env-provided EPUB smoke check when set locally
+        if let realPath = ProcessInfo.processInfo.environment["COHORT_READER_TEST_EPUB"],
+           !realPath.isEmpty,
+           FileManager.default.fileExists(atPath: realPath) {
+            let realDoc = try EPUBParser.parse(url: URL(fileURLWithPath: realPath))
+            #expect(!realDoc.spineHrefs.isEmpty)
+            let sampleIdx = min(19, realDoc.spineHrefs.count - 1)
+            let sampleCh = try #require(realDoc.chapter(at: sampleIdx))
+            #expect(!sampleCh.plainText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+    }
 }
 
 private final class MockManifoldURLProtocol: URLProtocol, @unchecked Sendable {
@@ -449,6 +599,21 @@ private final class MockHomeURLProtocol: URLProtocol, @unchecked Sendable {
             """.utf8)
         } else if path == "/api/progress" {
             body = Data("{\"accepted\":1}".utf8)
+        } else if path == "/api/match" {
+            body = Data("""
+            {
+              "matches": {
+                "isbn:9780300078152": {
+                  "id": "md5-scott",
+                  "title": "Seeing Like a State",
+                  "author": "James C. Scott",
+                  "format": "epub",
+                  "bytes": 2400000,
+                  "hasCover": true
+                }
+              }
+            }
+            """.utf8)
         } else {
             status = 404
         }

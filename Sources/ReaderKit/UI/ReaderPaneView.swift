@@ -27,9 +27,27 @@ public struct ReaderPaneView: View {
         VStack(spacing: 0) {
             if !vm.isReaderChromeHidden || isSnapshot {
                 // Top Reader Bar
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Button {
-                        vm.isTOCPresented = true
+                        ReaderHaptics.selection()
+                        vm.cancelActiveOpen()
+                        vm.selectedTab = .shelf
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 13, weight: .semibold))
+                            Text("Library")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .foregroundStyle(ReaderPalette.accent)
+                        .padding(.vertical, 4)
+                        .padding(.trailing, 4)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Back to Library")
+
+                    Button {
+                        vm.activeSheet = .toc
                     } label: {
                         Image(systemName: "list.bullet")
                             .font(.system(size: 14, weight: .medium))
@@ -72,7 +90,7 @@ public struct ReaderPaneView: View {
                         .accessibilityLabel("Send passage to Cohort")
 
                         Button {
-                            vm.isTypographyPresented = true
+                            vm.activeSheet = .typography
                         } label: {
                             Text("Aa")
                                 .font(.system(size: 13, weight: .semibold, design: .serif))
@@ -135,7 +153,7 @@ public struct ReaderPaneView: View {
                             onNoteTap: { noteId in
                                 if let hit = vm.activeNotes.first(where: { $0.id == noteId }) {
                                     ReaderHaptics.selection()
-                                    vm.presentedMarginNote = hit
+                                    vm.activeSheet = .marginNote(hit)
                                 }
                             },
                             onProgress: { frac, word in
@@ -150,6 +168,10 @@ public struct ReaderPaneView: View {
                             },
                             onSelection: { text in
                                 vm.activeSelectionText = text
+                            },
+                            onSelectSpine: { idx in
+                                ReaderHaptics.selection()
+                                Task { await vm.selectEPUBSpine(idx) }
                             },
                             onZoneTap: { zone in
                                 switch zone {
@@ -191,38 +213,86 @@ public struct ReaderPaneView: View {
                         )
                     }
                 } else if let book = vm.activeBook {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(book.title)
-                            .font(.system(size: 18, weight: .semibold, design: .serif))
-                            .foregroundStyle(ReaderPalette.label)
-                        Text(book.shortCitation)
-                            .font(.system(size: 13))
-                            .foregroundStyle(ReaderPalette.secondary)
-                        Text(book.summary.isEmpty ? "Metadata reference entry." : book.summary)
-                            .font(.system(size: 14))
-                            .foregroundStyle(ReaderPalette.label)
-                        if let cid = book.canonicalId {
-                            Text(cid)
-                                .font(.system(size: 12, design: .monospaced))
-                                .foregroundStyle(ReaderPalette.accent)
-                        }
-                        if book.epubURL != nil || book.openAccessURL != nil || book.source == .homeServer {
+                    if vm.openingBookId == book.id {
+                        VStack(spacing: 14) {
+                            ProgressView()
+                                .controlSize(.regular)
+                            Text("Opening \(book.title)")
+                                .font(.system(size: 16, weight: .semibold, design: .serif))
+                                .foregroundStyle(ReaderPalette.label)
+                                .multilineTextAlignment(.center)
+                                .lineLimit(2)
+                            Text(book.shortCitation)
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(ReaderPalette.secondary)
+                            if book.bytes > 0 {
+                                Text(ByteCountFormatter.string(fromByteCount: book.bytes, countStyle: .file))
+                                    .font(.system(size: 11.5, design: .monospaced))
+                                    .foregroundStyle(ReaderPalette.secondary)
+                            }
                             Button {
-                                Task { await vm.downloadForOffline(book) }
+                                vm.cancelActiveOpen()
                             } label: {
-                                Text("Download Open / Library Edition")
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .padding(.horizontal, 12)
+                                Text("Cancel")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .padding(.horizontal, 16)
                                     .padding(.vertical, 8)
-                                    .background(ReaderPalette.accent, in: RoundedRectangle(cornerRadius: 7))
-                                    .foregroundStyle(.white)
+                                    .background(ReaderPalette.surface, in: RoundedRectangle(cornerRadius: 7))
+                                    .foregroundStyle(ReaderPalette.label)
+                                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(ReaderPalette.hairline, lineWidth: 1))
                             }
                             .buttonStyle(.plain)
                         }
-                        Spacer()
+                        .padding(24)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(book.title)
+                                .font(.system(size: 18, weight: .semibold, design: .serif))
+                                .foregroundStyle(ReaderPalette.label)
+                            Text(book.shortCitation)
+                                .font(.system(size: 13))
+                                .foregroundStyle(ReaderPalette.secondary)
+                            Text(book.summary.isEmpty ? "Offline copy is not downloaded yet." : book.summary)
+                                .font(.system(size: 14))
+                                .foregroundStyle(ReaderPalette.label)
+                            if let cid = book.canonicalId {
+                                Text(cid)
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .foregroundStyle(ReaderPalette.accent)
+                            }
+                            HStack(spacing: 10) {
+                                if book.epubURL != nil || book.openAccessURL != nil || book.source == .homeServer {
+                                    Button {
+                                        Task { await vm.openBook(book) }
+                                    } label: {
+                                        Text("Download & Read")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .padding(.horizontal, 14)
+                                            .padding(.vertical, 8)
+                                            .background(ReaderPalette.accent, in: RoundedRectangle(cornerRadius: 7))
+                                            .foregroundStyle(.white)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                Button {
+                                    vm.selectedTab = .shelf
+                                } label: {
+                                    Text("Back to Library")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 8)
+                                        .background(ReaderPalette.surface, in: RoundedRectangle(cornerRadius: 7))
+                                        .foregroundStyle(ReaderPalette.label)
+                                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(ReaderPalette.hairline, lineWidth: 1))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            Spacer()
+                        }
+                        .padding(16)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 } else {
                     VStack(spacing: 10) {
                         Image(systemName: "book.closed")
@@ -287,12 +357,13 @@ public struct ReaderPaneView: View {
                                 vm.isReaderChromeHidden = false
                             }
                         } label: {
-                            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                            Label("Controls", systemImage: "arrow.down.right.and.arrow.up.left")
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(chromeFg)
-                                .padding(9)
-                                .background(chromeBg.opacity(0.92), in: Circle())
-                                .overlay(Circle().stroke(chromeFg.opacity(0.18), lineWidth: 1))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(chromeBg.opacity(0.94), in: Capsule())
+                                .overlay(Capsule().stroke(chromeFg.opacity(0.22), lineWidth: 1))
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Show Controls")
@@ -346,7 +417,7 @@ public struct ReaderPaneView: View {
                         Spacer()
 
                         Button {
-                            vm.isTOCPresented = true
+                            vm.activeSheet = .toc
                         } label: {
                             let timeSuffix = (mins ?? 0) > 0 ? " · ~\(mins!) min" : ""
                             Text("Ch \(displayIdx + 1)/\(total) · \(pct)%\(timeSuffix)")
@@ -417,7 +488,7 @@ public struct ReaderPaneView: View {
                         Spacer()
 
                         Button {
-                            vm.isTOCPresented = true
+                            vm.activeSheet = .toc
                         } label: {
                             Text("Page \(displayIdx + 1)/\(total) · \(vm.activeBook?.progressPercent ?? 0)%")
                                 .font(.system(size: 11.5, design: .monospaced))
@@ -451,12 +522,6 @@ public struct ReaderPaneView: View {
         #if os(iOS)
         .statusBarHidden(vm.isReaderChromeHidden && !isSnapshot)
         #endif
-        .sheet(isPresented: $vm.isTOCPresented) {
-            TOCSheet(vm: vm)
-        }
-        .sheet(isPresented: $vm.isTypographyPresented) {
-            TypographySheet(typography: $vm.typography, onChange: { vm.saveTypography() })
-        }
     }
 
     private var currentSubtitle: String? {
@@ -513,7 +578,7 @@ private struct SnapshotEPUBReaderBody: View {
                         .foregroundStyle(muted)
                     ForEach(notes) { note in
                         Button {
-                            vm.presentedMarginNote = note
+                            vm.activeSheet = .marginNote(note)
                         } label: {
                             HStack(alignment: .top, spacing: 8) {
                                 Text(note.kind.capitalized)
@@ -599,10 +664,18 @@ private struct EPUBWebView: UIViewRepresentable {
     let onNoteTap: (String) -> Void
     let onProgress: (Double, Int) -> Void
     let onSelection: (String) -> Void
+    let onSelectSpine: (Int) -> Void
     let onZoneTap: (String) -> Void
 
     func makeCoordinator() -> EPUBWebCoordinator {
-        EPUBWebCoordinator(document: document, onNoteTap: onNoteTap, onProgress: onProgress, onSelection: onSelection, onZoneTap: onZoneTap)
+        EPUBWebCoordinator(
+            document: document,
+            onNoteTap: onNoteTap,
+            onProgress: onProgress,
+            onSelection: onSelection,
+            onSelectSpine: onSelectSpine,
+            onZoneTap: onZoneTap
+        )
     }
 
     func makeUIView(context: Context) -> WKWebView {
@@ -610,6 +683,7 @@ private struct EPUBWebView: UIViewRepresentable {
         config.setURLSchemeHandler(context.coordinator, forURLScheme: "cohortbook")
         config.userContentController.add(context.coordinator, name: "cohortReader")
         let web = WKWebView(frame: .zero, configuration: config)
+        web.navigationDelegate = context.coordinator
         web.isOpaque = false
         web.backgroundColor = .clear
         web.scrollView.backgroundColor = .clear
@@ -618,10 +692,15 @@ private struct EPUBWebView: UIViewRepresentable {
 
     func updateUIView(_ web: WKWebView, context: Context) {
         context.coordinator.document = document
+        context.coordinator.onNoteTap = onNoteTap
+        context.coordinator.onProgress = onProgress
+        context.coordinator.onSelection = onSelection
+        context.coordinator.onSelectSpine = onSelectSpine
+        context.coordinator.onZoneTap = onZoneTap
         if context.coordinator.lastChapterKey != chapterKey {
             context.coordinator.lastChapterKey = chapterKey
             context.coordinator.lastTypographyJS = typographyJS
-            let base = URL(string: "cohortbook://local/\(baseArchiveDir)/")
+            let base = baseArchiveDir.isEmpty ? URL(string: "cohortbook://local/") : URL(string: "cohortbook://local/\(baseArchiveDir)/")
             web.loadHTMLString(html, baseURL: base)
         } else if context.coordinator.lastTypographyJS != typographyJS {
             context.coordinator.lastTypographyJS = typographyJS
@@ -679,10 +758,18 @@ private struct EPUBWebView: NSViewRepresentable {
     let onNoteTap: (String) -> Void
     let onProgress: (Double, Int) -> Void
     let onSelection: (String) -> Void
+    let onSelectSpine: (Int) -> Void
     let onZoneTap: (String) -> Void
 
     func makeCoordinator() -> EPUBWebCoordinator {
-        EPUBWebCoordinator(document: document, onNoteTap: onNoteTap, onProgress: onProgress, onSelection: onSelection, onZoneTap: onZoneTap)
+        EPUBWebCoordinator(
+            document: document,
+            onNoteTap: onNoteTap,
+            onProgress: onProgress,
+            onSelection: onSelection,
+            onSelectSpine: onSelectSpine,
+            onZoneTap: onZoneTap
+        )
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -690,15 +777,21 @@ private struct EPUBWebView: NSViewRepresentable {
         config.setURLSchemeHandler(context.coordinator, forURLScheme: "cohortbook")
         config.userContentController.add(context.coordinator, name: "cohortReader")
         let web = WKWebView(frame: .zero, configuration: config)
+        web.navigationDelegate = context.coordinator
         return web
     }
 
     func updateNSView(_ web: WKWebView, context: Context) {
         context.coordinator.document = document
+        context.coordinator.onNoteTap = onNoteTap
+        context.coordinator.onProgress = onProgress
+        context.coordinator.onSelection = onSelection
+        context.coordinator.onSelectSpine = onSelectSpine
+        context.coordinator.onZoneTap = onZoneTap
         if context.coordinator.lastChapterKey != chapterKey {
             context.coordinator.lastChapterKey = chapterKey
             context.coordinator.lastTypographyJS = typographyJS
-            let base = URL(string: "cohortbook://local/\(baseArchiveDir)/")
+            let base = baseArchiveDir.isEmpty ? URL(string: "cohortbook://local/") : URL(string: "cohortbook://local/\(baseArchiveDir)/")
             web.loadHTMLString(html, baseURL: base)
         } else if context.coordinator.lastTypographyJS != typographyJS {
             context.coordinator.lastTypographyJS = typographyJS
@@ -744,27 +837,85 @@ private struct PDFKitReaderView: NSViewRepresentable {
 #endif
 
 @MainActor
-private final class EPUBWebCoordinator: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
+private final class EPUBWebCoordinator: NSObject, WKURLSchemeHandler, WKScriptMessageHandler, WKNavigationDelegate {
     var document: EPUBDocument
     var lastChapterKey: String = ""
     var lastTypographyJS: String = ""
-    let onNoteTap: (String) -> Void
-    let onProgress: (Double, Int) -> Void
-    let onSelection: (String) -> Void
-    let onZoneTap: (String) -> Void
+    var onNoteTap: (String) -> Void
+    var onProgress: (Double, Int) -> Void
+    var onSelection: (String) -> Void
+    var onSelectSpine: (Int) -> Void
+    var onZoneTap: (String) -> Void
 
     init(
         document: EPUBDocument,
         onNoteTap: @escaping (String) -> Void,
         onProgress: @escaping (Double, Int) -> Void,
         onSelection: @escaping (String) -> Void,
+        onSelectSpine: @escaping (Int) -> Void,
         onZoneTap: @escaping (String) -> Void
     ) {
         self.document = document
         self.onNoteTap = onNoteTap
         self.onProgress = onProgress
         self.onSelection = onSelection
+        self.onSelectSpine = onSelectSpine
         self.onZoneTap = onZoneTap
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
+    ) {
+        let url = navigationAction.request.url
+        if navigationAction.navigationType == .linkActivated {
+            guard let url else {
+                decisionHandler(.cancel)
+                return
+            }
+            if url.scheme == "cohortbook" {
+                var clean = url.path
+                while clean.hasPrefix("/") { clean.removeFirst() }
+                let isDirFragment = (clean.isEmpty || clean.hasSuffix("/")) && url.fragment != nil
+                if isDirFragment {
+                    decisionHandler(.allow)
+                    return
+                }
+                clean = (clean.components(separatedBy: "#").first ?? clean).removingPercentEncoding ?? clean
+                if let exactIdx = document.spineHrefs.firstIndex(where: { $0 == clean }) {
+                    onSelectSpine(exactIdx)
+                    decisionHandler(.cancel)
+                    return
+                }
+                let filename = (clean as NSString).lastPathComponent
+                if !filename.isEmpty,
+                   let suffixIdx = document.spineHrefs.firstIndex(where: { ($0 as NSString).lastPathComponent == filename }) {
+                    onSelectSpine(suffixIdx)
+                    decisionHandler(.cancel)
+                    return
+                }
+                decisionHandler(.cancel)
+                return
+            }
+            if let scheme = url.scheme?.lowercased(), ["http", "https", "mailto"].contains(scheme) {
+                #if canImport(UIKit)
+                UIApplication.shared.open(url)
+                #elseif canImport(AppKit)
+                NSWorkspace.shared.open(url)
+                #endif
+                decisionHandler(.cancel)
+                return
+            }
+            decisionHandler(.cancel)
+            return
+        }
+
+        if url == nil || url?.scheme == "cohortbook" || url?.scheme == "about" {
+            decisionHandler(.allow)
+        } else {
+            decisionHandler(.cancel)
+        }
     }
 
     func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
@@ -1137,7 +1288,7 @@ private struct OfflineLocatorMapView: View {
     }
 }
 
-private struct TOCSheet: View {
+struct TOCSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var vm: ReaderViewModel
 
@@ -1250,7 +1401,6 @@ private struct TOCSheet: View {
                                         .buttonStyle(.plain)
 
                                         Button {
-                                            dismiss()
                                             vm.prepareCohortDraft(quote: h.quote)
                                         } label: {
                                             Image(systemName: "rectangle.badge.plus")
@@ -1289,8 +1439,7 @@ private struct TOCSheet: View {
                                     Button {
                                         Task {
                                             await vm.selectEPUBSpine(note.spine)
-                                            dismiss()
-                                            vm.presentedMarginNote = note
+                                            vm.transitionSheet(to: .marginNote(note))
                                         }
                                     } label: {
                                         HStack(alignment: .top, spacing: 8) {

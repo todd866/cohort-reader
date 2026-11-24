@@ -23,7 +23,7 @@ public struct ReaderRootView: View {
             Group {
                 switch vm.selectedTab {
                 case .shelf:
-                    ShelfView(vm: vm, onImportTap: { vm.isImporterPresented = true })
+                    ShelfView(vm: vm, onImportTap: { vm.requestFileImport() })
                 case .read:
                     ReaderPaneView(vm: vm)
                 case .map:
@@ -60,44 +60,47 @@ public struct ReaderRootView: View {
                 .background(ReaderPalette.surface)
             }
 
-            if !(vm.selectedTab == .read && vm.isReaderChromeHidden && !isSnapshot) {
+            if !(vm.selectedTab == .read && vm.isReaderChromeHidden && (vm.activeEPUB != nil || vm.activePDFURL != nil) && !isSnapshot) {
                 Divider()
                 tabBar
             }
         }
         .background(ReaderPalette.background)
-        .sheet(isPresented: $vm.isSettingsPresented) {
-            SettingsSheet(vm: vm)
-        }
-        .sheet(item: $vm.presentedMarginNote) { note in
-            MarginNoteSheet(
-                note: note,
-                serverURL: vm.serverURL,
-                bookId: vm.activeBook?.id ?? "",
-                onSendToCohort: {
-                    vm.presentedMarginNote = nil
-                    vm.prepareCohortDraft(quote: "\(note.label) — \"\(note.anchor)\"\n\(note.note)")
-                }
-            )
-        }
-        .sheet(item: $vm.presentedDiscoveryWork) { work in
-            DiscoveryDetailSheet(vm: vm, work: work)
-        }
-        .sheet(item: Binding(
-            get: { vm.pendingCohortDraft.map { IdentifiableDraft(draft: $0) } },
-            set: { if $0 == nil { vm.pendingCohortDraft = nil } }
-        )) { wrapped in
-            CohortDraftSheet(vm: vm, draft: wrapped.draft)
-        }
-        .fileImporter(
-            isPresented: $vm.isImporterPresented,
-            allowedContentTypes: importTypes,
-            allowsMultipleSelection: false
-        ) { result in
-            if case .success(let urls) = result, let first = urls.first {
-                Task { await vm.importLocalFile(from: first) }
+        .sheet(item: $vm.activeSheet) { sheet in
+            switch sheet {
+            case .settings:
+                SettingsSheet(vm: vm)
+            case .marginNote(let note):
+                MarginNoteSheet(
+                    note: note,
+                    serverURL: vm.serverURL,
+                    bookId: vm.activeBook?.id ?? "",
+                    onSendToCohort: {
+                        vm.prepareCohortDraft(quote: "\(note.label) — \"\(note.anchor)\"\n\(note.note)")
+                    }
+                )
+            case .discovery(let work):
+                DiscoveryDetailSheet(vm: vm, work: work)
+            case .cohortDraft(let draft):
+                CohortDraftSheet(vm: vm, draft: draft)
+            case .toc:
+                TOCSheet(vm: vm)
+            case .typography:
+                TypographySheet(typography: $vm.typography, onChange: { vm.saveTypography() })
             }
         }
+        .background(
+            Color.clear
+                .fileImporter(
+                    isPresented: $vm.isImporterPresented,
+                    allowedContentTypes: importTypes,
+                    allowsMultipleSelection: false
+                ) { result in
+                    if case .success(let urls) = result, let first = urls.first {
+                        Task { await vm.importLocalFile(from: first) }
+                    }
+                }
+        )
     }
 
     private var tabBar: some View {
@@ -131,9 +134,4 @@ public struct ReaderRootView: View {
         .buttonStyle(.plain)
         .accessibilityLabel(tab.rawValue)
     }
-}
-
-private struct IdentifiableDraft: Identifiable {
-    var id: String { "\(draft.sourceBookId):\(draft.quote.prefix(32))" }
-    var draft: CohortCardDraft
 }

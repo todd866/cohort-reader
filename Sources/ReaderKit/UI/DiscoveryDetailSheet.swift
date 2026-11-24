@@ -10,10 +10,12 @@ public struct DiscoveryDetailSheet: View {
     @Environment(\.readerSnapshotMode) private var isSnapshot
     @Bindable public var vm: ReaderViewModel
     public let work: ManifoldReaderWork
+    public let isNested: Bool
 
-    public init(vm: ReaderViewModel, work: ManifoldReaderWork) {
+    public init(vm: ReaderViewModel, work: ManifoldReaderWork, isNested: Bool = false) {
         self.vm = vm
         self.work = work
+        self.isNested = isNested
     }
 
     private var owned: BookItem? { vm.ownedBook(for: work) }
@@ -28,28 +30,49 @@ public struct DiscoveryDetailSheet: View {
             sheetContent(includeTopClose: true)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .background(ReaderPalette.background)
+        } else if isNested {
+            detailScrollBody
         } else {
             NavigationStack {
-                ScrollView {
-                    sheetContent(includeTopClose: false)
-                }
-                .background(ReaderPalette.background)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Close") { dismiss() }
-                    }
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            Task { await vm.toggleWishlist(workId: work.workId) }
-                        } label: {
-                            Image(systemName: isSaved ? "bookmark.fill" : "bookmark")
-                                .foregroundStyle(isSaved ? ReaderPalette.accent : ReaderPalette.label)
-                        }
-                        .accessibilityLabel(isSaved ? "Remove from Want to Read" : "Save to Want to Read")
+                detailScrollBody
+            }
+            .presentationDetents([.large])
+        }
+    }
+
+    private var detailScrollBody: some View {
+        ScrollView {
+            sheetContent(includeTopClose: false)
+        }
+        .background(ReaderPalette.background)
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbar {
+            if !isNested {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") {
+                        vm.activeSheet = nil
+                        dismiss()
                     }
                 }
             }
-            .presentationDetents([.large])
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    Task { await vm.toggleWishlist(workId: work.workId) }
+                } label: {
+                    Image(systemName: isSaved ? "bookmark.fill" : "bookmark")
+                        .foregroundStyle(isSaved ? ReaderPalette.accent : ReaderPalette.label)
+                }
+                .accessibilityLabel(isSaved ? "Remove from Want to Read" : "Save to Want to Read")
+            }
+            if isNested {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Close") {
+                        vm.activeSheet = nil
+                    }
+                }
+            }
         }
     }
 
@@ -123,6 +146,7 @@ public struct DiscoveryDetailSheet: View {
             HStack(spacing: 8) {
                 if let owned {
                     Button {
+                        vm.activeSheet = nil
                         dismiss()
                         Task { await vm.openBook(owned) }
                     } label: {
@@ -161,8 +185,7 @@ public struct DiscoveryDetailSheet: View {
                     .buttonStyle(.plain)
 
                     Button {
-                        dismiss()
-                        vm.isImporterPresented = true
+                        vm.requestFileImport()
                     } label: {
                         Label("Import", systemImage: "square.and.arrow.down")
                             .font(.system(size: 13, weight: .medium))
@@ -176,8 +199,8 @@ public struct DiscoveryDetailSheet: View {
                 }
 
                 Button {
-                    dismiss()
                     vm.focusWorkInAtlas(work)
+                    dismiss()
                 } label: {
                     Label("Atlas", systemImage: "sparkles")
                         .font(.system(size: 13, weight: .medium))
@@ -252,32 +275,16 @@ public struct DiscoveryDetailSheet: View {
                     ForEach(neighbours, id: \.0.workId) { pair in
                         let target = pair.0
                         let inLib = vm.ownedBook(for: target) != nil
-                        Button {
-                            vm.presentedDiscoveryWork = target
-                        } label: {
-                            HStack(spacing: 10) {
-                                BookCoverView(book: target.toBookItem(), serverURL: "", width: 32, height: 48, isSnapshot: isSnapshot)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(target.title)
-                                        .font(.system(size: 12.5, weight: .medium))
-                                        .foregroundStyle(ReaderPalette.label)
-                                        .lineLimit(2)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                        .multilineTextAlignment(.leading)
-                                    Text(inLib ? "\(target.creator) · In library" : target.creator)
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(inLib ? ReaderPalette.cohortGreen : ReaderPalette.secondary)
-                                        .lineLimit(1)
-                                }
-                                Spacer(minLength: 4)
-                                Text(String(format: "%.2f", pair.1))
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(ReaderPalette.secondary)
-                                    .monospacedDigit()
+                        if isSnapshot {
+                            connectedWorkRow(target: target, sim: pair.1, inLib: inLib)
+                        } else {
+                            NavigationLink {
+                                DiscoveryDetailSheet(vm: vm, work: target, isNested: true)
+                            } label: {
+                                connectedWorkRow(target: target, sim: pair.1, inLib: inLib)
                             }
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -314,6 +321,35 @@ public struct DiscoveryDetailSheet: View {
             Spacer(minLength: 0)
         }
         .padding(16)
+    }
+
+    private func connectedWorkRow(target: ManifoldReaderWork, sim: Double, inLib: Bool) -> some View {
+        HStack(spacing: 10) {
+            BookCoverView(book: target.toBookItem(), serverURL: "", width: 32, height: 48, isSnapshot: isSnapshot)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(target.title)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(ReaderPalette.label)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                Text(inLib ? "\(target.creator) · In library" : target.creator)
+                    .font(.system(size: 11))
+                    .foregroundStyle(inLib ? ReaderPalette.cohortGreen : ReaderPalette.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Text(String(format: "%.2f", sim))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(ReaderPalette.secondary)
+                .monospacedDigit()
+            if !isSnapshot {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(ReaderPalette.secondary.opacity(0.7))
+            }
+        }
+        .contentShape(Rectangle())
     }
 
     private var formattedCanonicalId: String {

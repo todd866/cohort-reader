@@ -39,6 +39,26 @@ public enum ReaderTab: String, CaseIterable, Sendable {
     }
 }
 
+public enum ActiveReaderSheet: Identifiable, Sendable {
+    case settings
+    case marginNote(MarginNote)
+    case discovery(ManifoldReaderWork)
+    case cohortDraft(CohortCardDraft)
+    case toc
+    case typography
+
+    public var id: String {
+        switch self {
+        case .settings: return "settings"
+        case .marginNote(let note): return "note:\(note.id)"
+        case .discovery(let work): return "discovery:\(work.workId)"
+        case .cohortDraft(let draft): return "cohort:\(draft.sourceBookId):\(draft.quote.prefix(24))"
+        case .toc: return "toc"
+        case .typography: return "typography"
+        }
+    }
+}
+
 public enum SearchScope: String, CaseIterable, Sendable {
     case all = "All"
     case books = "Books"
@@ -70,8 +90,8 @@ public final class ReaderViewModel {
     public var mapGestureStartPan: CGSize?
     public var shardCacheHits: Int = 0
     public var manifoldHubURL: String
-    public var presentedDiscoveryWork: ManifoldReaderWork?
     public var wishlistIds: Set<String> = []
+    public var serverOwnedWorkIds: [String: String] = [:]
 
     // Home Library Server & Smart Offline Download
     public var serverURL: String
@@ -93,19 +113,15 @@ public final class ReaderViewModel {
     public var activePDFMetadata: PDFMetadataSummary?
     public var activePDFPageIndex: Int = 0
     public var activeNotes: [MarginNote] = []
-    public var presentedMarginNote: MarginNote?
-    public var isTOCPresented: Bool = false
     public var tocSegment: Int = 0
     public var tocSearchQuery: String = ""
     public var inBookMatches: [InBookSearchHit] = []
     public var scrubChapterTarget: Int?
     public var scrubPDFPageTarget: Int?
-    public var isTypographyPresented: Bool = false
     public var isReaderChromeHidden: Bool = false
     public var typography: ReaderTypography = .default
     public var activeHighlights: [ReadingHighlight] = []
     public var activeSelectionText: String = ""
-    public var pendingCohortDraft: CohortCardDraft?
     public var cohortDraftNote: String = ""
     public var isImporterPresented: Bool = false
     public var lastHandoffMessage: String?
@@ -116,14 +132,17 @@ public final class ReaderViewModel {
     public var serverSearchResults: [BookItem] = []
     public var isSearchingServer: Bool = false
 
-    // Settings & Errors
-    public var isSettingsPresented: Bool = false
+    // Settings, Sheets & Errors
+    public var activeSheet: ActiveReaderSheet?
+    public var openingBookId: String?
     public var offlineBytes: Int64 = 0
     public var bannerError: String?
     public var isBusyBookId: String?
 
     private var readingStartAt: Date = Date()
     private var autoDownloadTask: Task<Void, Never>?
+    private var openBookTask: Task<Void, Never>?
+    private var openBookGeneration: Int = 0
     private var manifoldSyncedOnce: Bool = false
     private var allowBackgroundSync: Bool = true
 
@@ -223,7 +242,21 @@ public final class ReaderViewModel {
     }
 
     public static func normalizedTitleKey(_ raw: String) -> String {
-        let head = raw.components(separatedBy: CharacterSet(charactersIn: ":—")).first ?? raw
+        var source = raw
+        if let dashRange = raw.range(of: "—") {
+            let before = raw[..<dashRange.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+            let after = raw[dashRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+            let beforeWords = before.split(whereSeparator: \.isWhitespace).map(String.init)
+            let firstLower = beforeWords.first?.lowercased() ?? ""
+            let startsWithArticle = ["the", "a", "an"].contains(firstLower)
+            if (2...4).contains(beforeWords.count),
+               !startsWithArticle,
+               before.rangeOfCharacter(from: .decimalDigits) == nil,
+               after.count >= 4 {
+                source = after
+            }
+        }
+        let head = source.components(separatedBy: CharacterSet(charactersIn: ":—")).first ?? source
         let noParen = head.replacingOccurrences(of: #"\([^)]*\)"#, with: " ", options: .regularExpression)
         let cleaned = noParen.lowercased()
             .replacingOccurrences(of: #"[^a-z0-9\s]+"#, with: " ", options: .regularExpression)
@@ -239,19 +272,23 @@ public final class ReaderViewModel {
     }
 
     public func ownedBook(for work: ManifoldReaderWork) -> BookItem? {
+        if let mappedBookId = serverOwnedWorkIds[work.workId],
+           let mapped = books.first(where: { $0.id == mappedBookId }) {
+            return mapped
+        }
         if let exact = books.first(where: { $0.canonicalId == work.workId }) {
             return exact
         }
         let targetKey = Self.normalizedTitleKey(work.title)
-        guard targetKey.count >= 5 else { return nil }
+        guard targetKey.count >= 4 else { return nil }
         return books.first { book in
             let bKey = Self.normalizedTitleKey(book.title)
-            return bKey == targetKey || (bKey.count >= 10 && bKey.hasPrefix(targetKey))
+            return bKey == targetKey || (bKey.count >= targetKey.count + 2 && bKey.hasPrefix(targetKey + " "))
         }
     }
 
     public var continueReadingBook: BookItem? {
-        books.first { ($0.locator?.fraction ?? 0) > 0 && ($0.locator?.fraction ?? 0) < 0.98 && ($0.isOfflineCached || $0.source == .homeServer) }
+        books.first { $0.isInProgress && ($0.isOfflineCached || $0.source == .homeServer) }
             ?? books.first(where: \.isOfflineCached)
     }
 
@@ -302,11 +339,36 @@ public final class ReaderViewModel {
         return baseSim + wishBoost + byoDiversityBoost
     }
 
+    public func transitionSheet(to next: ActiveReaderSheet) {
+        if activeSheet != nil {
+            activeSheet = nil
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(260))
+                self.activeSheet = next
+            }
+        } else {
+            activeSheet = next
+        }
+    }
+
+    public func requestFileImport() {
+        let hadSheet = activeSheet != nil
+        activeSheet = nil
+        if hadSheet {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(280))
+                self.isImporterPresented = true
+            }
+        } else {
+            isImporterPresented = true
+        }
+    }
+
     public func openOrInspect(_ work: ManifoldReaderWork) async {
         if let owned = ownedBook(for: work) {
             await openBook(owned)
         } else {
-            presentedDiscoveryWork = work
+            activeSheet = .discovery(work)
         }
     }
 
@@ -327,9 +389,9 @@ public final class ReaderViewModel {
         }
         try? await store.upsertBooks([book])
         books = visibleLibraryBooks(from: (try? await store.listBooks()) ?? books)
-        await downloadForOffline(book)
+        await downloadForOffline(book, forceImmediate: true)
         if let updated = books.first(where: { $0.id == book.id }), updated.isOfflineCached {
-            presentedDiscoveryWork = nil
+            activeSheet = nil
             await openBook(updated, switchTab: true)
         }
     }
@@ -345,7 +407,7 @@ public final class ReaderViewModel {
         }
         func score(_ book: BookItem) -> Int {
             var pts = 0
-            if let frac = book.locator?.fraction, frac > 0, frac < 0.98 { pts += 1000 }
+            if book.isInProgress { pts += 1000 }
             if book.notesVersion != nil { pts += 500 }
             if book.shelfNames.contains(where: { $0.caseInsensitiveCompare("Reading") == .orderedSame }) { pts += 300 }
             pts += (book.format == .epub ? 150 : 40)
@@ -353,6 +415,17 @@ public final class ReaderViewModel {
             return pts
         }
         return eligible.sorted { a, b in
+            if a.isInProgress != b.isInProgress {
+                return a.isInProgress
+            }
+            if a.isInProgress && b.isInProgress {
+                let da = a.locator?.updatedAt ?? a.lastOpenedAt ?? .distantPast
+                let db = b.locator?.updatedAt ?? b.lastOpenedAt ?? .distantPast
+                if da != db { return da > db }
+                if abs(a.effectiveProgress - b.effectiveProgress) > 0.0001 {
+                    return a.effectiveProgress > b.effectiveProgress
+                }
+            }
             let sa = score(a)
             let sb = score(b)
             if sa != sb { return sa > sb }
@@ -402,7 +475,7 @@ public final class ReaderViewModel {
     public func rebuildShelves() {
         var list: [LibraryShelf] = []
         let readingIds = books
-            .filter { ($0.locator?.fraction ?? 0) > 0 && ($0.locator?.fraction ?? 0) < 0.98 }
+            .filter(\.isInProgress)
             .map(\.id)
         if !readingIds.isEmpty {
             list.append(LibraryShelf(id: "reading", title: "Reading Now", itemIds: readingIds))
@@ -419,14 +492,20 @@ public final class ReaderViewModel {
     }
 
     public func manifoldWork(for book: BookItem) -> ManifoldReaderWork? {
+        if let mappedWorkId = serverOwnedWorkIds.first(where: { $0.value == book.id })?.key,
+           let mapped = manifoldWorks.first(where: { $0.workId == mappedWorkId }) {
+            return mapped
+        }
         if let cid = book.canonicalId, let exact = manifoldWorks.first(where: { $0.workId == cid }) {
             return exact
         }
         let targetKey = Self.normalizedTitleKey(book.title)
-        guard targetKey.count >= 5 else { return nil }
+        guard targetKey.count >= 4 else { return nil }
         return manifoldWorks.first { work in
             let wKey = Self.normalizedTitleKey(work.title)
-            return wKey == targetKey || (wKey.count >= 10 && wKey.hasPrefix(targetKey)) || (targetKey.count >= 10 && targetKey.hasPrefix(wKey))
+            return wKey == targetKey
+                || (wKey.count >= targetKey.count + 2 && wKey.hasPrefix(targetKey + " "))
+                || (targetKey.count >= wKey.count + 2 && targetKey.hasPrefix(wKey + " "))
         }
     }
 
@@ -434,7 +513,7 @@ public final class ReaderViewModel {
         selectedMapWorkId = work.workId
         mapZoom = 1.0
         mapPan = .zero
-        presentedDiscoveryWork = nil
+        activeSheet = nil
         selectedTab = .map
     }
 
@@ -455,7 +534,7 @@ public final class ReaderViewModel {
         case "All":
             base = books
         case "Reading", "Reading Now":
-            base = books.filter { ($0.locator?.fraction ?? 0) > 0 && ($0.locator?.fraction ?? 0) < 0.98 }
+            base = books.filter(\.isInProgress)
         case "Offline":
             base = books.filter(\.isOfflineCached)
         case "Saved":
@@ -481,8 +560,8 @@ public final class ReaderViewModel {
             }
         case .progress:
             return base.sorted {
-                let fa = $0.locator?.fraction ?? 0
-                let fb = $1.locator?.fraction ?? 0
+                let fa = $0.effectiveProgress
+                let fb = $1.effectiveProgress
                 if abs(fa - fb) > 0.0001 { return fa > fb }
                 return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
             }
@@ -491,7 +570,23 @@ public final class ReaderViewModel {
 
     // MARK: - Open & Read
 
+    public func cancelActiveOpen() {
+        openBookGeneration += 1
+        openBookTask?.cancel()
+        openBookTask = nil
+        openingBookId = nil
+        if selectedTab == .read && activeEPUB == nil && activePDFURL == nil {
+            selectedTab = .shelf
+        }
+    }
+
     public func openBook(_ book: BookItem, switchTab: Bool = true) async {
+        autoDownloadTask?.cancel()
+        autoDownloadActiveTitle = nil
+        openBookTask?.cancel()
+        openBookGeneration += 1
+        let generation = openBookGeneration
+
         bannerError = nil
         readingStartAt = Date()
         isReaderChromeHidden = false
@@ -500,6 +595,10 @@ public final class ReaderViewModel {
         activeEPUB = nil
         activePDFURL = nil
         activePDFMetadata = nil
+        openingBookId = book.id
+        if switchTab {
+            selectedTab = .read
+        }
         defaults.set(book.id, forKey: "cohortReader.lastBookId")
         activeHighlights = (try? await store.listHighlights(bookId: book.id)) ?? []
         activeNotes = (try? await store.loadMarginNotes(bookId: book.id)) ?? []
@@ -515,37 +614,49 @@ public final class ReaderViewModel {
             selectedMapWorkId = work.workId
         }
 
-        if let localPath = book.localFilePath, FileManager.default.fileExists(atPath: localPath) {
-            let url = URL(fileURLWithPath: localPath)
-            loadLocalDocument(url: url, book: book)
-        } else if book.source == .homeServer && isServerConnected {
-            await downloadForOffline(book)
-            if let updated = books.first(where: { $0.id == book.id }),
-               let localPath = updated.localFilePath,
-               FileManager.default.fileExists(atPath: localPath) {
-                loadLocalDocument(url: URL(fileURLWithPath: localPath), book: updated)
+        let task = Task { @MainActor [weak self] () -> Void in
+            guard let self else { return }
+            defer {
+                if self.openBookGeneration == generation {
+                    self.openingBookId = nil
+                }
             }
-        } else if let cid = book.canonicalId,
-                  let dlURL = URL(string: book.epubURL ?? "") ?? OpenAccessResolver.directDownloadURL(for: cid) {
-            await fetchOpenAccessBook(book, from: dlURL)
-        } else if book.canonicalId == "gutenberg:84" {
-            if let data = try? SampleShowcaseEPUB.buildFrankensteinSampleData(),
-               let url = try? await store.storeOfflineBookData(data, bookId: book.id, format: .epub) {
-                loadLocalDocument(url: url, book: book)
-            }
-        }
+            guard !Task.isCancelled, self.openBookGeneration == generation else { return }
 
-        if activeNotes.isEmpty && book.source == .homeServer && book.notesVersion != nil && isServerConnected && !serverURL.isEmpty {
-            let notes = (try? await HomeLibraryClient.fetchMarginNotes(baseURL: serverURL, bookId: book.id)) ?? []
-            if !notes.isEmpty {
-                try? await store.saveMarginNotes(bookId: book.id, notes: notes)
-                activeNotes = notes
+            if let localPath = book.localFilePath, FileManager.default.fileExists(atPath: localPath) {
+                let url = URL(fileURLWithPath: localPath)
+                await self.loadLocalDocument(url: url, book: book, generation: generation)
+            } else if book.source == .homeServer && self.isServerConnected {
+                await self.downloadForOffline(book, forceImmediate: true)
+                guard !Task.isCancelled, self.openBookGeneration == generation else { return }
+                if let updated = self.books.first(where: { $0.id == book.id }),
+                   let localPath = updated.localFilePath,
+                   FileManager.default.fileExists(atPath: localPath) {
+                    await self.loadLocalDocument(url: URL(fileURLWithPath: localPath), book: updated, generation: generation)
+                }
+            } else if let cid = book.canonicalId,
+                      let dlURL = URL(string: book.epubURL ?? "") ?? OpenAccessResolver.directDownloadURL(for: cid) {
+                await self.fetchOpenAccessBook(book, from: dlURL, generation: generation)
+            } else if book.canonicalId == "gutenberg:84" {
+                if let data = try? SampleShowcaseEPUB.buildFrankensteinSampleData(),
+                   let url = try? await self.store.storeOfflineBookData(data, bookId: book.id, format: .epub) {
+                    await self.loadLocalDocument(url: url, book: book, generation: generation)
+                }
+            } else {
+                self.bannerError = "Offline copy not available yet."
+            }
+
+            guard !Task.isCancelled, self.openBookGeneration == generation else { return }
+            if self.activeNotes.isEmpty && book.source == .homeServer && book.notesVersion != nil && self.isServerConnected && !self.serverURL.isEmpty {
+                let notes = (try? await HomeLibraryClient.fetchMarginNotes(baseURL: self.serverURL, bookId: book.id)) ?? []
+                if !notes.isEmpty && self.openBookGeneration == generation {
+                    try? await self.store.saveMarginNotes(bookId: book.id, notes: notes)
+                    self.activeNotes = notes
+                }
             }
         }
-
-        if switchTab {
-            selectedTab = .read
-        }
+        openBookTask = task
+        await task.value
     }
 
     public func saveTypography() {
@@ -620,29 +731,38 @@ public final class ReaderViewModel {
         return max(1, Int(ceil(Double(remainingWords) / 230.0)))
     }
 
-    private func loadLocalDocument(url: URL, book: BookItem) {
+    private func loadLocalDocument(url: URL, book: BookItem, generation: Int? = nil) async {
+        guard generation == nil || (generation == openBookGeneration && !Task.isCancelled) else { return }
         if book.format == .epub {
             do {
-                let doc = try EPUBParser.parse(url: url)
+                let doc = try await Task.detached(priority: .userInitiated) {
+                    try EPUBParser.parse(url: url)
+                }.value
+                guard generation == nil || (generation == openBookGeneration && !Task.isCancelled) else { return }
                 activeEPUB = doc
                 let spine = book.locator?.spine ?? 0
                 activeEPUBSpineIndex = min(max(spine, 0), max(0, doc.spineHrefs.count - 1))
                 if !AssetImageCache.shared.hasImage(forBookId: book.id),
                    let coverHref = doc.coverHref,
-                   let coverData = doc.resources[coverHref] {
+                   let coverData = doc.resourceData(forArchivePath: coverHref)?.data ?? doc.resources[coverHref] {
                     let bookId = book.id
                     Task {
                         await AssetImageCache.shared.registerLocalCover(data: coverData, bookId: bookId)
                     }
                 }
             } catch {
+                guard generation == nil || generation == openBookGeneration else { return }
                 bannerError = "Failed to open EPUB: \(error.localizedDescription)"
             }
         } else {
+            let meta = await Task.detached(priority: .userInitiated) {
+                PDFInspector.inspect(url: url)
+            }.value
+            guard generation == nil || (generation == openBookGeneration && !Task.isCancelled) else { return }
             activePDFURL = url
-            activePDFMetadata = PDFInspector.inspect(url: url)
-            if let count = activePDFMetadata?.pageCount, let loc = book.locator {
-                activePDFPageIndex = loc.pageIndex ?? PDFInspector.pageIndex(forFraction: loc.fraction, pageCount: count)
+            activePDFMetadata = meta
+            if let count = meta?.pageCount, let loc = book.locator {
+                activePDFPageIndex = loc.pageIndex ?? PDFInspector.pageIndex(forFraction: loc.effectiveProgress, pageCount: count)
             } else {
                 activePDFPageIndex = 0
             }
@@ -703,11 +823,20 @@ public final class ReaderViewModel {
         guard var book = activeBook else { return }
         let elapsed = max(0, Int(Date().timeIntervalSince(readingStartAt)))
         readingStartAt = Date()
+        let spineCount = activeEPUB?.spineHrefs.count ?? activePDFMetadata?.pageCount ?? book.locator?.spineCount
+        let overall: Double? = {
+            if let count = spineCount, count > 0 {
+                return min(max((Double(spine) + fraction) / Double(count), 0), 1)
+            }
+            return fraction
+        }()
         let next = ReadingLocator(
             spine: spine,
             fraction: fraction,
             wordOffset: wordOffset,
             pageIndex: pageIndex,
+            spineCount: spineCount,
+            overallProgress: overall,
             updatedAt: Date()
         )
         do {
@@ -798,12 +927,20 @@ public final class ReaderViewModel {
 
     // MARK: - Offline Caching & Eviction
 
-    public func downloadForOffline(_ book: BookItem) async {
-        guard isBusyBookId == nil else { return }
+    public func downloadForOffline(_ book: BookItem, forceImmediate: Bool = false) async {
+        if !forceImmediate {
+            guard isBusyBookId == nil else { return }
+        }
+        let prevBusy = isBusyBookId
         isBusyBookId = book.id
-        defer { isBusyBookId = nil }
+        defer {
+            if isBusyBookId == book.id {
+                isBusyBookId = (prevBusy == book.id) ? nil : prevBusy
+            }
+        }
 
         do {
+            try Task.checkCancellation()
             let data: Data
             if book.source == .homeServer && !serverURL.isEmpty {
                 data = try await HomeLibraryClient.downloadBook(baseURL: serverURL, bookId: book.id)
@@ -824,6 +961,7 @@ public final class ReaderViewModel {
                 throw HomeLibraryError.emptyPayload
             }
 
+            try Task.checkCancellation()
             let url = try await store.storeOfflineBookData(data, bookId: book.id, format: book.format == .article ? .pdf : book.format)
             var updated = book
             updated.isOfflineCached = true
@@ -834,21 +972,24 @@ public final class ReaderViewModel {
             rebuildShelves()
             offlineBytes = await store.cachedBookBytes()
             if activeBook?.id == book.id {
-                activeBook = updated
+                activeBook = books.first(where: { $0.id == book.id }) ?? updated
             }
+        } catch is CancellationError {
+            return
         } catch {
             bannerError = "Download failed: \(error.localizedDescription)"
         }
     }
 
-    public func fetchOpenAccessBook(_ book: BookItem, from url: URL) async {
+    public func fetchOpenAccessBook(_ book: BookItem, from url: URL, generation: Int? = nil) async {
         var copy = book
         copy.epubURL = url.absoluteString
-        await downloadForOffline(copy)
+        await downloadForOffline(copy, forceImmediate: true)
+        guard generation == nil || (generation == openBookGeneration && !Task.isCancelled) else { return }
         if let updated = books.first(where: { $0.id == book.id }),
            let path = updated.localFilePath,
            FileManager.default.fileExists(atPath: path) {
-            loadLocalDocument(url: URL(fileURLWithPath: path), book: updated)
+            await loadLocalDocument(url: URL(fileURLWithPath: path), book: updated, generation: generation)
         }
     }
 
@@ -894,7 +1035,7 @@ public final class ReaderViewModel {
     public func prepareCohortDraft(quote: String) {
         guard let book = activeBook else { return }
         cohortDraftNote = ""
-        pendingCohortDraft = CohortCardDraft(
+        let draft = CohortCardDraft(
             sourceBookId: book.id,
             canonicalId: book.canonicalId,
             sourceTitle: book.title,
@@ -902,6 +1043,7 @@ public final class ReaderViewModel {
             promptHint: "Key concept from \(book.title)",
             tags: ["reader", book.genre.lowercased().replacingOccurrences(of: " ", with: "-")]
         )
+        transitionSheet(to: .cohortDraft(draft))
     }
 
     public func sendDraftToCohort(_ draft: CohortCardDraft, note: String) async -> URL? {
@@ -916,7 +1058,7 @@ public final class ReaderViewModel {
             sentToCohort: true
         )
         try? await store.saveHighlight(highlight)
-        pendingCohortDraft = nil
+        activeSheet = nil
 
         if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             let dropDir = appSupport.appendingPathComponent("CohortReader/cohort-handoff", isDirectory: true)
@@ -939,10 +1081,43 @@ public final class ReaderViewModel {
                     selectedLensId = first.id
                 }
             }
+            if isServerConnected {
+                await syncManifoldOwnershipWithServer()
+            }
         } catch {
             if !silent {
                 bannerError = "Manifold sync failed: \(error.localizedDescription)"
             }
+        }
+    }
+
+    public func syncManifoldOwnershipWithServer() async {
+        guard isServerConnected, !serverURL.isEmpty, !manifoldWorks.isEmpty else { return }
+        do {
+            let queries = manifoldWorks.map { (workId: $0.workId, title: $0.title, creator: $0.creator) }
+            let matched = try await HomeLibraryClient.matchWorks(baseURL: serverURL, works: queries)
+            guard !matched.isEmpty else { return }
+            var newMap = serverOwnedWorkIds
+            var toUpsert: [BookItem] = []
+            for (workId, book) in matched {
+                newMap[workId] = book.id
+                var enriched = book
+                if enriched.canonicalId == nil {
+                    enriched.canonicalId = workId
+                }
+                toUpsert.append(enriched)
+            }
+            serverOwnedWorkIds = newMap
+            try await store.upsertBooks(toUpsert)
+            for item in toUpsert {
+                if let loc = item.locator {
+                    _ = try? await store.saveLocator(bookId: item.id, locator: loc, enqueueSync: false)
+                }
+            }
+            books = visibleLibraryBooks(from: try await store.listBooks())
+            rebuildShelves()
+        } catch {
+            // Retain existing client-side title matching if server lacks /api/match
         }
     }
 
@@ -995,7 +1170,19 @@ public final class ReaderViewModel {
                     _ = try? await store.saveLocator(bookId: item.id, locator: loc, enqueueSync: false)
                 }
             }
+            let prevActiveLoc = activeBook?.locator
             books = visibleLibraryBooks(from: try await store.listBooks())
+            if let activeId = activeBook?.id, let refreshed = books.first(where: { $0.id == activeId }) {
+                activeBook = refreshed
+                if let newLoc = refreshed.locator,
+                   prevActiveLoc == nil || newLoc.updatedAt > prevActiveLoc!.updatedAt {
+                    if let doc = activeEPUB {
+                        activeEPUBSpineIndex = min(max(newLoc.spine, 0), max(0, doc.spineHrefs.count - 1))
+                    } else if let meta = activePDFMetadata, meta.pageCount > 0 {
+                        activePDFPageIndex = newLoc.pageIndex ?? PDFInspector.pageIndex(forFraction: newLoc.effectiveProgress, pageCount: meta.pageCount)
+                    }
+                }
+            }
             shelves = catalog.shelves.isEmpty ? shelves : catalog.shelves
             if catalog.shelves.isEmpty { rebuildShelves() }
             isServerConnected = true
@@ -1003,6 +1190,7 @@ public final class ReaderViewModel {
             serverName = name
             serverStatusMessage = "\(name) · \(catalog.items.count) works"
             await flushProgressOutbox()
+            await syncManifoldOwnershipWithServer()
             if !manifoldSyncedOnce {
                 manifoldSyncedOnce = true
                 Task { await self.refreshManifold(silent: true) }

@@ -64,10 +64,19 @@ public struct EPUBDocument: Sendable {
     }
 
     public func resourceData(forArchivePath path: String) -> (data: Data, mimeType: String)? {
-        let normalized = path.hasPrefix("/") ? String(path.dropFirst()) : path
+        var normalized = path
+        while normalized.hasPrefix("/") {
+            normalized.removeFirst()
+        }
         let clean = normalized.components(separatedBy: "#").first ?? normalized
-        guard let data = resources[clean] else { return nil }
-        return (data, EPUBMimeType.forPath(clean))
+        let unescaped = clean.removingPercentEncoding ?? clean
+        if let data = resources[clean] {
+            return (data, EPUBMimeType.forPath(clean))
+        }
+        if unescaped != clean, let data = resources[unescaped] {
+            return (data, EPUBMimeType.forPath(unescaped))
+        }
+        return nil
     }
 }
 
