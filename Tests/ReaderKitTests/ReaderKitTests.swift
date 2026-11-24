@@ -932,6 +932,53 @@ struct ReaderKitTests {
         #expect(vm.handleEscapeKey() == true)
         #expect(vm.isInlineFindPresented == false)
 
+        // n / N repeat find stepping even after Find bar was dismissed
+        #expect(vm.handleSingleKeyCommand("n"))
+        #expect(vm.isInlineFindPresented == true)
+        #expect(vm.inlineFindDirection == 1)
+        #expect(vm.handleEscapeKey() == true)
+        #expect(vm.handleSingleKeyCommand("N"))
+        #expect(vm.isInlineFindPresented == true)
+        #expect(vm.inlineFindDirection == -1)
+        #expect(vm.handleEscapeKey() == true)
+
+        // Basic EPUB reading navigation keys & single-key scale shortcuts
+        #expect(vm.handleSingleKeyCommand("PageDown"))
+        #expect(vm.epubPendingCommand == "pageNext")
+        #expect(vm.handleSingleKeyCommand("PageUp"))
+        #expect(vm.epubPendingCommand == "pagePrev")
+        #expect(vm.handleSingleKeyCommand("Backspace"))
+        #expect(vm.epubPendingCommand == "pagePrev")
+        #expect(vm.handleSingleKeyCommand("d"))
+        #expect(vm.epubPendingCommand == "halfPageDown")
+        #expect(vm.handleSingleKeyCommand("u"))
+        #expect(vm.epubPendingCommand == "halfPageUp")
+        #expect(vm.handleSingleKeyCommand("Home"))
+        #expect(vm.epubPendingCommand == "jumpTop")
+        #expect(vm.handleSingleKeyCommand("End"))
+        #expect(vm.epubPendingCommand == "jumpBottom")
+
+        let beforeKeyScale = vm.typography.fontSize
+        #expect(vm.handleSingleKeyCommand("="))
+        #expect(vm.typography.fontSize == beforeKeyScale + 1)
+        #expect(vm.handleSingleKeyCommand("+"))
+        #expect(vm.typography.fontSize == beforeKeyScale + 2)
+        #expect(vm.handleSingleKeyCommand("-"))
+        #expect(vm.typography.fontSize == beforeKeyScale + 1)
+        #expect(vm.handleSingleKeyCommand("0"))
+        #expect(vm.typography.fontSize == 18)
+
+        // Chapter stepping via navigateForwardOrNext / navigateBackOrPrevious and [ / ]
+        let startSpine = vm.activeEPUBSpineIndex
+        if (vm.activeEPUB?.spineHrefs.count ?? 0) > 1 {
+            await vm.navigateForwardOrNext()
+            #expect(vm.activeEPUBSpineIndex == startSpine + 1)
+            await vm.navigateBackOrPrevious()
+            #expect(vm.activeEPUBSpineIndex == startSpine)
+        }
+        #expect(vm.handleSingleKeyCommand("]"))
+        #expect(vm.handleSingleKeyCommand("["))
+
         #expect(vm.handleSingleKeyCommand(":"))
         #expect(vm.isGoToPagePresented == true)
         #expect(vm.handleEscapeKey() == true)
@@ -954,19 +1001,32 @@ struct ReaderKitTests {
         // 5. Switch to PDF -> unified scale & PDF single-key commands
         await vm.quickOpenExternalFile(from: pdfURL)
         #expect(vm.activePDFURL == pdfURL)
-        vm.increaseReadingScale()
+        #expect(vm.handleSingleKeyCommand("PageDown"))
+        #expect(vm.pdfPendingCommand == "pageDown")
+        #expect(vm.handleSingleKeyCommand("PageUp"))
+        #expect(vm.pdfPendingCommand == "pageUp")
+        #expect(vm.handleSingleKeyCommand("Backspace"))
+        #expect(vm.pdfPendingCommand == "pageUp")
+        #expect(vm.handleSingleKeyCommand("d"))
+        #expect(vm.pdfPendingCommand == "halfPageDown")
+        #expect(vm.handleSingleKeyCommand("u"))
+        #expect(vm.pdfPendingCommand == "halfPageUp")
+        #expect(vm.handleSingleKeyCommand("="))
         #expect(vm.pdfZoomScale > 1.0)
-        vm.resetReadingScale()
+        #expect(vm.handleSingleKeyCommand("0"))
         #expect(vm.pdfZoomScale == 1.0)
         #expect(vm.handleSingleKeyCommand("2"))
         #expect(vm.pdfTwoUpMode == true)
         #expect(vm.handleSingleKeyCommand("c"))
         #expect(vm.pdfAutoCropEnabled == true)
 
-        // 6. Shelf focus navigation
+        // 6. Shelf focus navigation & ⌘F on Shelf focuses Library Search
         vm.selectedTab = .shelf
         #expect(vm.handleSingleKeyCommand("j"))
         #expect(vm.focusedShelfBookId != nil)
+        vm.openInlineFind()
+        #expect(vm.selectedTab == .search)
+        #expect(vm.isInlineFindPresented == false)
     }
 }
 

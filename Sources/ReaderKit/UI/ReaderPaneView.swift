@@ -1788,6 +1788,10 @@ private final class EPUBWebCoordinator: NSObject, WKURLSchemeHandler, WKScriptMe
                 web.evaluateJavaScript("window.__cohortScrollBy && window.__cohortScrollBy(Math.max(240, window.innerHeight * 0.85));", completionHandler: nil)
             case "pagePrev":
                 web.evaluateJavaScript("window.__cohortScrollBy && window.__cohortScrollBy(-Math.max(240, window.innerHeight * 0.85));", completionHandler: nil)
+            case "halfPageDown":
+                web.evaluateJavaScript("window.__cohortScrollBy && window.__cohortScrollBy(Math.max(180, window.innerHeight * 0.45));", completionHandler: nil)
+            case "halfPageUp":
+                web.evaluateJavaScript("window.__cohortScrollBy && window.__cohortScrollBy(-Math.max(180, window.innerHeight * 0.45));", completionHandler: nil)
             case "jumpTop":
                 web.evaluateJavaScript("window.__cohortJumpEdge && window.__cohortJumpEdge('top');", completionHandler: nil)
             case "jumpBottom":
@@ -1940,6 +1944,7 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
     private var lastReportedSelection: String = ""
     private var lastZoomScale: Double = 1.0
     private var lastColumnKey: String = ""
+    private var lastSyncedPageIndex: Int = -1
 
     init(
         onPageChanged: @escaping (Int) -> Void,
@@ -1966,6 +1971,7 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
                     guard let self, let pdfView, let doc = pdfView.document, let page = pdfView.currentPage else { return }
                     let idx = doc.index(for: page)
                     if idx != NSNotFound {
+                        self.lastSyncedPageIndex = idx
                         self.onPageChanged(idx)
                     }
                     let cols = PDFColumnDetector.detectColumns(on: page)
@@ -2027,6 +2033,7 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
             cachedFindIndex = 0
             lastZoomScale = 1.0
             lastColumnKey = ""
+            lastSyncedPageIndex = -1
             view.document = PDFDocument(url: url)
         }
 
@@ -2083,10 +2090,13 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
             }
         }
 
-        if pageIndex >= 0, pageIndex < doc.pageCount,
-           let target = doc.page(at: pageIndex),
-           view.currentPage != target {
-            view.go(to: target)
+        if lastSyncedPageIndex != pageIndex,
+           pageIndex >= 0, pageIndex < doc.pageCount,
+           let target = doc.page(at: pageIndex) {
+            lastSyncedPageIndex = pageIndex
+            if view.currentPage != target {
+                view.go(to: target)
+            }
         }
 
         if lastPDFCommandToken != pdfCommandToken, let cmd = pdfPendingCommand {
@@ -2096,12 +2106,20 @@ private final class PDFViewCoordinator: NSObject, PDFViewDelegate {
                 if let first = doc.page(at: 0) { view.go(to: first) }
             case "jumpBottom":
                 if doc.pageCount > 0, let last = doc.page(at: doc.pageCount - 1) { view.go(to: last) }
-            case "scrollDown", "scrollUp", "pageDown", "pageUp":
-                let isUp = (cmd == "scrollUp" || cmd == "pageUp")
+            case "scrollDown", "scrollUp", "halfPageDown", "halfPageUp", "pageDown", "pageUp":
+                let isUp = (cmd == "scrollUp" || cmd == "halfPageUp" || cmd == "pageUp")
                 let isPage = (cmd == "pageDown" || cmd == "pageUp")
+                let isHalf = (cmd == "halfPageDown" || cmd == "halfPageUp")
                 #if canImport(AppKit)
                 if let sv = view.documentView?.enclosingScrollView, let docView = view.documentView {
-                    let step = isPage ? max(240, sv.contentView.bounds.height * 0.85) : 140
+                    let step: CGFloat
+                    if isPage {
+                        step = max(240, sv.contentView.bounds.height * 0.85)
+                    } else if isHalf {
+                        step = max(180, sv.contentView.bounds.height * 0.45)
+                    } else {
+                        step = 140
+                    }
                     let signedDelta = isUp ? -step : step
                     var pt = sv.contentView.bounds.origin
                     if docView.isFlipped {

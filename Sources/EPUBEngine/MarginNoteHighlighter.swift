@@ -516,25 +516,33 @@ public enum EPUBHTMLComposer {
             if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
             const tag = ev.target && ev.target.tagName ? ev.target.tagName.toLowerCase() : '';
             if (tag === 'input' || tag === 'textarea' || (ev.target && ev.target.isContentEditable)) return;
-            if (ev.key === 'ArrowRight' || (ev.key === ' ' && !ev.shiftKey) || ev.key === 'l') {
+            if (ev.key === 'ArrowRight' || (ev.key === ' ' && !ev.shiftKey) || ev.key === 'l' || ev.key === 'PageDown') {
               ev.preventDefault();
               stepPage(1);
-            } else if (ev.key === 'ArrowLeft' || (ev.key === ' ' && ev.shiftKey) || ev.key === 'h') {
+            } else if (ev.key === 'ArrowLeft' || (ev.key === ' ' && ev.shiftKey) || ev.key === 'h' || ev.key === 'PageUp' || ev.key === 'Backspace') {
               ev.preventDefault();
               stepPage(-1);
             } else if (ev.key === 'j' || ev.key === 'ArrowDown') {
-              if (IS_PAGINATED) { ev.preventDefault(); stepPage(1); }
+              ev.preventDefault();
+              if (IS_PAGINATED) { stepPage(1); }
               else { userInteracted = true; window.scrollBy({ top: 140, behavior: 'smooth' }); }
             } else if (ev.key === 'k' || ev.key === 'ArrowUp') {
-              if (IS_PAGINATED) { ev.preventDefault(); stepPage(-1); }
+              ev.preventDefault();
+              if (IS_PAGINATED) { stepPage(-1); }
               else { userInteracted = true; window.scrollBy({ top: -140, behavior: 'smooth' }); }
-            } else if (ev.key === 'g' && !ev.shiftKey) {
+            } else if (ev.key === 'd') {
+              ev.preventDefault();
+              window.__cohortScrollBy(Math.max(180, window.innerHeight * 0.45));
+            } else if (ev.key === 'u') {
+              ev.preventDefault();
+              window.__cohortScrollBy(-Math.max(180, window.innerHeight * 0.45));
+            } else if ((ev.key === 'g' && !ev.shiftKey) || ev.key === 'Home') {
               ev.preventDefault();
               window.__cohortJumpEdge('top');
-            } else if (ev.key === 'G' || (ev.key === 'g' && ev.shiftKey)) {
+            } else if (ev.key === 'G' || (ev.key === 'g' && ev.shiftKey) || ev.key === 'End') {
               ev.preventDefault();
               window.__cohortJumpEdge('bottom');
-            } else if (['?', '/', ':', 'f', 't', 'm', 'p', 'a', '[', ']', 'H', 'Escape'].includes(ev.key)) {
+            } else if (['?', '/', ':', 'f', 't', 'm', 'p', 'a', '[', ']', 'H', 'n', 'N', '+', '=', '-', '0', 'Escape'].includes(ev.key)) {
               ev.preventDefault();
               post('keyCommand', { key: ev.key });
             }

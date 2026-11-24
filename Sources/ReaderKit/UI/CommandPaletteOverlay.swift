@@ -14,6 +14,7 @@ struct InlineCommandTextField: View {
     let text: String
     let fontSize: CGFloat
     let focusToken: Int
+    var selectAllOnFocus: Bool = false
     let onTextChange: (String) -> Void
     var onMoveUp: (() -> Void)? = nil
     var onMoveDown: (() -> Void)? = nil
@@ -34,6 +35,7 @@ struct InlineCommandTextField: View {
                 text: text,
                 fontSize: fontSize,
                 focusToken: focusToken,
+                selectAllOnFocus: selectAllOnFocus,
                 onTextChange: onTextChange,
                 onMoveUp: onMoveUp,
                 onMoveDown: onMoveDown,
@@ -52,6 +54,7 @@ private struct PlatformInlineTextField: NSViewRepresentable {
     let text: String
     let fontSize: CGFloat
     let focusToken: Int
+    let selectAllOnFocus: Bool
     let onTextChange: (String) -> Void
     let onMoveUp: (() -> Void)?
     let onMoveDown: (() -> Void)?
@@ -72,9 +75,17 @@ private struct PlatformInlineTextField: NSViewRepresentable {
         field.focusRingType = .none
         field.lineBreakMode = .byTruncatingTail
         field.delegate = context.coordinator
+        context.coordinator.needsFocus = true
         context.coordinator.lastFocusToken = focusToken
+        let shouldSelectAll = selectAllOnFocus
         DispatchQueue.main.async {
-            field.window?.makeFirstResponder(field)
+            if let win = field.window {
+                context.coordinator.needsFocus = false
+                win.makeFirstResponder(field)
+                if shouldSelectAll {
+                    field.currentEditor()?.selectAll(nil)
+                }
+            }
         }
         return field
     }
@@ -84,10 +95,17 @@ private struct PlatformInlineTextField: NSViewRepresentable {
         if field.stringValue != text {
             field.stringValue = text
         }
-        if context.coordinator.lastFocusToken != focusToken {
-            context.coordinator.lastFocusToken = focusToken
-            DispatchQueue.main.async {
-                field.window?.makeFirstResponder(field)
+        if context.coordinator.needsFocus || context.coordinator.lastFocusToken != focusToken {
+            if let win = field.window {
+                context.coordinator.needsFocus = false
+                context.coordinator.lastFocusToken = focusToken
+                let shouldSelectAll = selectAllOnFocus
+                DispatchQueue.main.async {
+                    win.makeFirstResponder(field)
+                    if shouldSelectAll {
+                        field.currentEditor()?.selectAll(nil)
+                    }
+                }
             }
         }
     }
@@ -96,6 +114,7 @@ private struct PlatformInlineTextField: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: PlatformInlineTextField
         var lastFocusToken: Int = 0
+        var needsFocus: Bool = true
 
         init(_ parent: PlatformInlineTextField) {
             self.parent = parent
@@ -146,6 +165,7 @@ private struct PlatformInlineTextField: UIViewRepresentable {
     let text: String
     let fontSize: CGFloat
     let focusToken: Int
+    let selectAllOnFocus: Bool
     let onTextChange: (String) -> Void
     let onMoveUp: (() -> Void)?
     let onMoveDown: (() -> Void)?
@@ -168,8 +188,12 @@ private struct PlatformInlineTextField: UIViewRepresentable {
         field.delegate = context.coordinator
         field.addTarget(context.coordinator, action: #selector(Coordinator.textChanged(_:)), for: .editingChanged)
         context.coordinator.lastFocusToken = focusToken
+        let shouldSelectAll = selectAllOnFocus
         DispatchQueue.main.async {
             field.becomeFirstResponder()
+            if shouldSelectAll {
+                field.selectAll(nil)
+            }
         }
         return field
     }
@@ -181,8 +205,12 @@ private struct PlatformInlineTextField: UIViewRepresentable {
         }
         if context.coordinator.lastFocusToken != focusToken {
             context.coordinator.lastFocusToken = focusToken
+            let shouldSelectAll = selectAllOnFocus
             DispatchQueue.main.async {
                 field.becomeFirstResponder()
+                if shouldSelectAll {
+                    field.selectAll(nil)
+                }
             }
         }
     }
@@ -240,7 +268,7 @@ public struct CommandPaletteOverlay: View {
                         placeholder: "Jump to book, page, or command…",
                         text: vm.commandPaletteQuery,
                         fontSize: 14.5,
-                        focusToken: vm.isCommandPalettePresented ? 1 : 0,
+                        focusToken: vm.commandPaletteFocusToken,
                         onTextChange: { next in
                             vm.commandPaletteQuery = next
                             vm.commandPaletteSelectionIndex = 0
@@ -378,18 +406,18 @@ public struct KeyboardShortcutsOverlay: View {
         [
             Entry(label: "Command Palette", keys: "⌘K"),
             Entry(label: "Find Inline", keys: "⌘F /"),
-            Entry(label: "Next / Prev Hit", keys: "↩ ⇧↩"),
+            Entry(label: "Next / Prev Hit", keys: "↩ ⇧↩ n N"),
             Entry(label: "Go to Page / Ch", keys: ": ⌘G"),
-            Entry(label: "Scroll / Step", keys: "j k ↑ ↓"),
-            Entry(label: "Page / Chapter", keys: "h l ␣"),
+            Entry(label: "Scroll / Half Pg", keys: "j k d u"),
+            Entry(label: "Page / Chapter", keys: "␣ ⌫ h l"),
             Entry(label: "Top / Bottom", keys: "g G"),
-            Entry(label: "Jump Back / Fwd", keys: "⌘[ ⌘]"),
+            Entry(label: "Back / Fwd", keys: "⌘[ ⌘]"),
         ]
     }
 
     private var viewEntries: [Entry] {
         [
-            Entry(label: "Zoom / Scale", keys: "⌘+ ⌘-"),
+            Entry(label: "Zoom / Scale", keys: "⌘= ⌘-"),
             Entry(label: "Reset Scale", keys: "⌘0"),
             Entry(label: "Cycle Theme", keys: "⌥⌘T t"),
             Entry(label: "EPUB Scroll/Pages", keys: "⌥⌘P p"),
@@ -511,7 +539,8 @@ struct InlineFindOverlay: View {
                 placeholder: "Find in document",
                 text: vm.inlineFindQuery,
                 fontSize: 12.5,
-                focusToken: vm.isInlineFindPresented ? 1 : 0,
+                focusToken: vm.inlineFindFocusToken,
+                selectAllOnFocus: true,
                 onTextChange: { vm.updateInlineFindQuery($0) },
                 onSubmit: { vm.stepInlineFind(delta: 1) },
                 onShiftSubmit: { vm.stepInlineFind(delta: -1) },
@@ -596,7 +625,8 @@ struct InlineGoToPageOverlay: View {
                 placeholder: placeholder,
                 text: vm.goToPageQuery,
                 fontSize: 12.5,
-                focusToken: vm.isGoToPagePresented ? 1 : 0,
+                focusToken: vm.goToPageFocusToken,
+                selectAllOnFocus: true,
                 onTextChange: { vm.goToPageQuery = $0 },
                 onSubmit: { Task { await vm.submitGoToPage() } },
                 onEscape: { vm.closeGoToPage() }

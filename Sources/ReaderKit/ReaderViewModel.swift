@@ -244,6 +244,9 @@ public final class ReaderViewModel {
     public var inlineFindDirection: Int = 1
     public var isGoToPagePresented: Bool = false
     public var goToPageQuery: String = ""
+    public var commandPaletteFocusToken: Int = 0
+    public var inlineFindFocusToken: Int = 0
+    public var goToPageFocusToken: Int = 0
     public var epubCommandToken: Int = 0
     public var epubPendingCommand: String?
     public var pdfCommandToken: Int = 0
@@ -2191,6 +2194,7 @@ public final class ReaderViewModel {
         commandPaletteQuery = ""
         commandPaletteSelectionIndex = 0
         isCommandPalettePresented = true
+        commandPaletteFocusToken += 1
     }
 
     public func closeCommandPalette() {
@@ -2210,18 +2214,22 @@ public final class ReaderViewModel {
     }
 
     public func openInlineFind() {
-        guard activeBook != nil else {
+        isCommandPalettePresented = false
+        isShortcutsHUDPresented = false
+        isGoToPagePresented = false
+        guard selectedTab == .read, activeBook != nil else {
             selectedTab = .search
             searchFocusToken += 1
             return
         }
-        isCommandPalettePresented = false
-        isShortcutsHUDPresented = false
-        isGoToPagePresented = false
-        selectedTab = .read
         isReaderChromeHidden = false
         isInlineFindPresented = true
-        if !inlineFindQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        inlineFindFocusToken += 1
+        let trimmed = inlineFindQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            if activePDFURL != nil {
+                activePDFSearchHighlight = trimmed
+            }
             inlineFindDirection = 1
             inlineFindActionToken += 1
         }
@@ -2244,7 +2252,14 @@ public final class ReaderViewModel {
     }
 
     public func stepInlineFind(delta: Int) {
-        guard !inlineFindQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let trimmed = inlineFindQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if !isInlineFindPresented {
+            isInlineFindPresented = true
+        }
+        if activePDFURL != nil {
+            activePDFSearchHighlight = trimmed
+        }
         inlineFindDirection = delta < 0 ? -1 : 1
         inlineFindActionToken += 1
     }
@@ -2264,6 +2279,7 @@ public final class ReaderViewModel {
             goToPageQuery = ""
         }
         isGoToPagePresented = true
+        goToPageFocusToken += 1
     }
 
     public func closeGoToPage() {
@@ -2350,6 +2366,30 @@ public final class ReaderViewModel {
         let idx = oneBasedIndex - 1
         guard idx >= 0, idx < openTabs.count else { return }
         await selectTab(id: openTabs[idx].id)
+    }
+
+    public func navigateBackOrPrevious() async {
+        if activeEPUB != nil {
+            await selectEPUBSpine(activeEPUBSpineIndex - 1)
+        } else if activePDFURL != nil {
+            if !pdfJumpBackStack.isEmpty {
+                await jumpBackInPDF()
+            } else {
+                await selectPDFPage(activePDFPageIndex - 1)
+            }
+        }
+    }
+
+    public func navigateForwardOrNext() async {
+        if activeEPUB != nil {
+            await selectEPUBSpine(activeEPUBSpineIndex + 1)
+        } else if activePDFURL != nil {
+            if !pdfJumpForwardStack.isEmpty {
+                await jumpForwardInPDF()
+            } else {
+                await selectPDFPage(activePDFPageIndex + 1)
+            }
+        }
     }
 
     @discardableResult
@@ -2616,6 +2656,10 @@ public final class ReaderViewModel {
         }
 
         guard selectedTab == .read && activeBook != nil else { return false }
+        if (key == "Backspace" || key == "Delete"), let sid = selectedStampId {
+            removePendingStamp(id: sid)
+            return true
+        }
         switch key {
         case "f":
             withAnimation(.easeInOut(duration: 0.18)) { isReaderChromeHidden.toggle() }
@@ -2648,12 +2692,32 @@ public final class ReaderViewModel {
             activeSheet = .pdfSign
             return true
         case "[":
-            guard activePDFURL != nil, !pdfJumpBackStack.isEmpty else { return false }
-            Task { await self.jumpBackInPDF() }
+            guard activeEPUB != nil || activePDFURL != nil else { return false }
+            Task { await self.navigateBackOrPrevious() }
             return true
         case "]":
-            guard activePDFURL != nil, !pdfJumpForwardStack.isEmpty else { return false }
-            Task { await self.jumpForwardInPDF() }
+            guard activeEPUB != nil || activePDFURL != nil else { return false }
+            Task { await self.navigateForwardOrNext() }
+            return true
+        case "n":
+            guard !inlineFindQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+            stepInlineFind(delta: shift ? -1 : 1)
+            return true
+        case "N":
+            guard !inlineFindQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+            stepInlineFind(delta: -1)
+            return true
+        case "+", "=":
+            guard activePDFURL != nil || activeEPUB != nil else { return false }
+            increaseReadingScale()
+            return true
+        case "-":
+            guard activePDFURL != nil || activeEPUB != nil else { return false }
+            decreaseReadingScale()
+            return true
+        case "0":
+            guard activePDFURL != nil || activeEPUB != nil else { return false }
+            resetReadingScale()
             return true
         case "H":
             let quote = activeSelectionText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2710,6 +2774,50 @@ public final class ReaderViewModel {
                 return true
             }
             return false
+        case "d":
+            if activeEPUB != nil {
+                epubPendingCommand = "halfPageDown"
+                epubCommandToken += 1
+                return true
+            } else if activePDFURL != nil {
+                pdfPendingCommand = "halfPageDown"
+                pdfCommandToken += 1
+                return true
+            }
+            return false
+        case "u":
+            if activeEPUB != nil {
+                epubPendingCommand = "halfPageUp"
+                epubCommandToken += 1
+                return true
+            } else if activePDFURL != nil {
+                pdfPendingCommand = "halfPageUp"
+                pdfCommandToken += 1
+                return true
+            }
+            return false
+        case "PageDown":
+            if activeEPUB != nil {
+                epubPendingCommand = "pageNext"
+                epubCommandToken += 1
+                return true
+            } else if activePDFURL != nil {
+                pdfPendingCommand = "pageDown"
+                pdfCommandToken += 1
+                return true
+            }
+            return false
+        case "PageUp", "Backspace":
+            if activeEPUB != nil {
+                epubPendingCommand = "pagePrev"
+                epubCommandToken += 1
+                return true
+            } else if activePDFURL != nil {
+                pdfPendingCommand = "pageUp"
+                pdfCommandToken += 1
+                return true
+            }
+            return false
         case " ":
             if activeEPUB != nil {
                 epubPendingCommand = shift ? "pagePrev" : "pageNext"
@@ -2721,7 +2829,7 @@ public final class ReaderViewModel {
                 return true
             }
             return false
-        case "g":
+        case "g", "Home":
             if activeEPUB != nil {
                 epubPendingCommand = "jumpTop"
                 epubCommandToken += 1
@@ -2732,7 +2840,7 @@ public final class ReaderViewModel {
                 return true
             }
             return false
-        case "G":
+        case "G", "End":
             if activeEPUB != nil {
                 epubPendingCommand = "jumpBottom"
                 epubCommandToken += 1
