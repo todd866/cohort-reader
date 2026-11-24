@@ -436,6 +436,7 @@ public struct LibraryShelf: Identifiable, Codable, Sendable, Hashable {
 }
 
 public enum ReaderTheme: String, Codable, Sendable, CaseIterable {
+    case auto = "Auto"
     case paper = "Paper"
     case sepia = "Sepia"
     case ink = "Ink"
@@ -447,24 +448,97 @@ public enum ReaderFontFamily: String, Codable, Sendable, CaseIterable {
     case mono = "Mono"
 }
 
+public enum ReaderMarginWidth: String, Codable, Sendable, CaseIterable {
+    case compact = "Compact"
+    case standard = "Standard"
+    case wide = "Wide"
+
+    public var horizontalPaddingPx: Int {
+        switch self {
+        case .compact: return 14
+        case .standard: return 22
+        case .wide: return 34
+        }
+    }
+}
+
+public enum ReaderTextAlignment: String, Codable, Sendable, CaseIterable {
+    case left = "Left"
+    case justified = "Justified"
+
+    public var cssTextAlign: String {
+        switch self {
+        case .left: return "left"
+        case .justified: return "justify"
+        }
+    }
+}
+
+public enum ShelfSortOrder: String, Codable, Sendable, CaseIterable {
+    case recent = "Recent"
+    case title = "Title"
+    case author = "Author"
+    case progress = "Progress"
+}
+
 public struct ReaderTypography: Codable, Sendable, Hashable {
     public var theme: ReaderTheme
     public var fontFamily: ReaderFontFamily
     public var fontSize: Double
     public var lineHeight: Double
+    public var marginWidth: ReaderMarginWidth
+    public var textAlignment: ReaderTextAlignment
 
     public static let `default` = ReaderTypography(
-        theme: .paper,
+        theme: .auto,
         fontFamily: .serif,
         fontSize: 18,
-        lineHeight: 1.58
+        lineHeight: 1.58,
+        marginWidth: .standard,
+        textAlignment: .left
     )
 
-    public init(theme: ReaderTheme, fontFamily: ReaderFontFamily, fontSize: Double, lineHeight: Double) {
+    public init(
+        theme: ReaderTheme,
+        fontFamily: ReaderFontFamily,
+        fontSize: Double,
+        lineHeight: Double,
+        marginWidth: ReaderMarginWidth = .standard,
+        textAlignment: ReaderTextAlignment = .left
+    ) {
         self.theme = theme
         self.fontFamily = fontFamily
         self.fontSize = min(max(fontSize, 13), 30)
         self.lineHeight = min(max(lineHeight, 1.2), 2.1)
+        self.marginWidth = marginWidth
+        self.textAlignment = textAlignment
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case theme
+        case fontFamily
+        case fontSize
+        case lineHeight
+        case marginWidth
+        case textAlignment
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let theme = try c.decodeIfPresent(ReaderTheme.self, forKey: .theme) ?? .auto
+        let fontFamily = try c.decodeIfPresent(ReaderFontFamily.self, forKey: .fontFamily) ?? .serif
+        let fontSize = try c.decodeIfPresent(Double.self, forKey: .fontSize) ?? 18
+        let lineHeight = try c.decodeIfPresent(Double.self, forKey: .lineHeight) ?? 1.58
+        let marginWidth = try c.decodeIfPresent(ReaderMarginWidth.self, forKey: .marginWidth) ?? .standard
+        let textAlignment = try c.decodeIfPresent(ReaderTextAlignment.self, forKey: .textAlignment) ?? .left
+        self.init(
+            theme: theme,
+            fontFamily: fontFamily,
+            fontSize: fontSize,
+            lineHeight: lineHeight,
+            marginWidth: marginWidth,
+            textAlignment: textAlignment
+        )
     }
 }
 

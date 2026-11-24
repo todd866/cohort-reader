@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 import ImageIO
 import PDFKit
+import SwiftUI
 import Testing
 @testable import EPUBEngine
 @testable import HomeLibraryClient
@@ -285,6 +286,81 @@ struct ReaderKitTests {
         )
         let ranked = ReaderViewModel.prioritizedAutoDownloadCandidates(from: [oversized, readingShelf, annotated, active])
         #expect(ranked.map(\.id) == ["b-active", "b-notes", "b-reading-shelf"])
+    }
+
+    @Test("Typography backward-compatible decode, Auto theme resolution, highlight CSS/JS, and store eviction")
+    @MainActor
+    func typographyAndHighlightUpgrades() async throws {
+        // 1. Default theme is Auto and legacy JSON without marginWidth/textAlignment decodes cleanly
+        #expect(ReaderTypography.default.theme == .auto)
+        let legacyJSON = Data("""
+        {"theme":"Sepia","fontFamily":"Serif","fontSize":20,"lineHeight":1.65}
+        """.utf8)
+        let decoded = try JSONDecoder().decode(ReaderTypography.self, from: legacyJSON)
+        #expect(decoded.theme == .sepia)
+        #expect(decoded.marginWidth == .standard)
+        #expect(decoded.textAlignment == .left)
+
+        // 2. Adaptive Auto resolution maps dark -> Ink, light -> Paper
+        #expect(ReaderPalette.resolvedTheme(.auto, colorScheme: .dark) == .ink)
+        #expect(ReaderPalette.resolvedTheme(.auto, colorScheme: .light) == .paper)
+        #expect(ReaderPalette.resolvedTheme(.sepia, colorScheme: .dark) == .sepia)
+
+        // 3. HTML composer injects highlights and live typography updater without reload
+        let sampleHL = ReadingHighlight(
+            bookId: "gutenberg-84",
+            canonicalId: "gutenberg:84",
+            bookTitle: "Frankenstein",
+            spine: 0,
+            quote: "cold northern breeze"
+        )
+        let html = EPUBHTMLComposer.composeChapterHTML(
+            rawXHTML: "<html><body><p>I feel a cold northern breeze play upon my cheeks.</p></body></html>",
+            typography: ReaderTypography.default,
+            notes: [],
+            initialFraction: 0,
+            initialWordOffset: nil,
+            resolvedTheme: .ink,
+            highlights: [sampleHL]
+        )
+        #expect(html.contains("--cr-bg: #111114"))
+        #expect(html.contains("cold northern breeze"))
+        #expect(html.contains("__cohortApplyTypography"))
+        let updateJS = EPUBHTMLComposer.typographyUpdateJS(typography: decoded, resolvedTheme: .sepia)
+        #expect(updateJS.contains("__cohortApplyTypography"))
+        #expect(updateJS.contains("#F3EAD8"))
+
+        // 4. ReaderStore deleteHighlight + evictAllCachedRemoteBooks preserves localImport
+        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent("reader-evict-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        let store = try ReaderStore(dbPath: tmpDir.appendingPathComponent("s.sqlite").path, cacheRoot: tmpDir)
+
+        try await store.saveHighlight(sampleHL)
+        #expect(try await store.listHighlights(bookId: "gutenberg-84").count == 1)
+        try await store.deleteHighlight(id: sampleHL.id)
+        #expect(try await store.listHighlights(bookId: "gutenberg-84").isEmpty)
+
+        let remoteBook = BookItem(id: "remote-1", title: "Remote", author: "R", format: .epub, source: .homeServer)
+        let localBook = BookItem(id: "local-1", title: "Local", author: "L", format: .epub, source: .localImport)
+        try await store.upsertBooks([remoteBook, localBook])
+        let payload = try SampleShowcaseEPUB.buildFrankensteinSampleData()
+        let remoteURL = try await store.storeOfflineBookData(payload, bookId: "remote-1", format: .epub)
+        let localURL = try await store.storeOfflineBookData(payload, bookId: "local-1", format: .epub)
+
+        try await store.evictAllCachedRemoteBooks()
+        #expect(FileManager.default.fileExists(atPath: remoteURL.path) == false)
+        #expect(FileManager.default.fileExists(atPath: localURL.path) == true)
+        let listed = try await store.listBooks()
+        #expect(listed.first(where: { $0.id == "remote-1" })?.isOfflineCached == false)
+        #expect(listed.first(where: { $0.id == "local-1" })?.isOfflineCached == true)
+
+        // 5. In-book EPUB search locates passages across chapters
+        let vm = ReaderViewModel(store: store, defaults: UserDefaults(suiteName: "cohort-reader-search-\(UUID().uuidString)")!)
+        await vm.bootstrap(loadSampleBook: true, runNetworkSync: false)
+        vm.tocSearchQuery = "Petersburgh"
+        vm.runInBookSearch()
+        #expect(vm.inBookMatches.contains(where: { $0.snippet.contains("Petersburgh") }))
     }
 }
 

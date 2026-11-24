@@ -9,7 +9,10 @@ public struct ShelfView: View {
 
     private var filterOptions: [String] {
         var list = ["All", "Reading", "Offline", "For You"]
-        let reserved: Set<String> = ["All", "Reading", "Reading Now", "Downloaded", "Offline", "For You", "General", "Library", "Paper", "Showcase", "Open Showcase"]
+        if !vm.wishlistIds.isEmpty {
+            list.append("Saved")
+        }
+        let reserved: Set<String> = ["All", "Reading", "Reading Now", "Downloaded", "Offline", "For You", "Saved", "General", "Library", "Paper", "Showcase", "Open Showcase"]
         for s in vm.shelves where !s.title.isEmpty && !reserved.contains(s.title) && !list.contains(s.title) {
             list.append(s.title)
         }
@@ -45,7 +48,43 @@ public struct ShelfView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Import EPUB or PDF")
 
+                if isSnapshot {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(vm.shelfSortOrder == .recent ? ReaderPalette.label : ReaderPalette.accent)
+                        .frame(width: 30, height: 30)
+                        .background(ReaderPalette.surface, in: RoundedRectangle(cornerRadius: 7))
+                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(ReaderPalette.hairline, lineWidth: 0.75))
+                } else {
+                    Menu {
+                        ForEach(ShelfSortOrder.allCases, id: \.self) { order in
+                            Button {
+                                ReaderHaptics.selection()
+                                vm.shelfSortOrder = order
+                                vm.savePreferences()
+                            } label: {
+                                if vm.shelfSortOrder == order {
+                                    Label(order.rawValue, systemImage: "checkmark")
+                                } else {
+                                    Text(order.rawValue)
+                                }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(vm.shelfSortOrder == .recent ? ReaderPalette.label : ReaderPalette.accent)
+                            .frame(width: 30, height: 30)
+                            .background(ReaderPalette.surface, in: RoundedRectangle(cornerRadius: 7))
+                            .overlay(RoundedRectangle(cornerRadius: 7).stroke(ReaderPalette.hairline, lineWidth: 0.75))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .accessibilityLabel("Sort library")
+                }
+
                 Button {
+                    ReaderHaptics.selection()
                     vm.shelfUsesListLayout.toggle()
                     vm.savePreferences()
                 } label: {
@@ -110,6 +149,8 @@ public struct ShelfView: View {
                     let cols = gridColumns(for: geo.size.width)
                     if vm.activeShelfFilter == "For You" {
                         discoveryGridContent(colCount: cols, totalWidth: geo.size.width)
+                    } else if vm.activeShelfFilter == "Saved" {
+                        savedGridContent(colCount: cols, totalWidth: geo.size.width)
                     } else {
                         libraryContent(colCount: cols, totalWidth: geo.size.width)
                     }
@@ -127,6 +168,7 @@ public struct ShelfView: View {
             ForEach(filterOptions, id: \.self) { option in
                 let selected = vm.activeShelfFilter == option
                 Button {
+                    ReaderHaptics.selection()
                     vm.activeShelfFilter = option
                 } label: {
                     Text(option)
@@ -169,6 +211,10 @@ public struct ShelfView: View {
         let gridItems = hero == nil ? items : items.filter { $0.id != hero?.id }
         let discovery = Array(vm.recommendedDiscoveryWorks.prefix(8))
         let w = cardWidth(for: totalWidth, colCount: colCount)
+        let splitCount = totalWidth > 700 ? colCount : colCount * 2
+        let hasEarlyDiscovery = vm.activeShelfFilter == "All" && !discovery.isEmpty && !vm.shelfUsesListLayout
+        let headGrid = hasEarlyDiscovery ? Array(gridItems.prefix(splitCount)) : gridItems
+        let tailGrid = hasEarlyDiscovery && gridItems.count > splitCount ? Array(gridItems.dropFirst(splitCount)) : []
 
         return VStack(alignment: .leading, spacing: 18) {
             if let hero {
@@ -177,7 +223,23 @@ public struct ShelfView: View {
                     serverURL: vm.serverURL,
                     isSnapshot: isSnapshot,
                     isServerConnected: vm.isServerConnected,
-                    onResume: { Task { await vm.openBook(hero) } }
+                    hasAtlasMatch: vm.manifoldWork(for: hero) != nil,
+                    onResume: {
+                        ReaderHaptics.light()
+                        Task { await vm.openBook(hero) }
+                    },
+                    onToggleOffline: {
+                        Task {
+                            if hero.isOfflineCached {
+                                await vm.evictOfflineBook(hero)
+                            } else {
+                                await vm.downloadForOffline(hero)
+                            }
+                        }
+                    },
+                    onShowInAtlas: {
+                        vm.focusBookInAtlas(hero)
+                    }
                 )
                 .padding(.horizontal, 14)
             }
@@ -191,6 +253,7 @@ public struct ShelfView: View {
                             isSnapshot: isSnapshot,
                             isServerConnected: vm.isServerConnected,
                             isBusy: vm.isBusyBookId == book.id,
+                            hasAtlasMatch: vm.manifoldWork(for: book) != nil,
                             onOpen: { Task { await vm.openBook(book) } },
                             onToggleOffline: {
                                 Task {
@@ -200,48 +263,107 @@ public struct ShelfView: View {
                                         await vm.downloadForOffline(book)
                                     }
                                 }
+                            },
+                            onShowInAtlas: {
+                                vm.focusBookInAtlas(book)
                             }
                         )
                         Divider().padding(.leading, 78)
                     }
                 }
             } else {
-                coverGrid(books: gridItems, colCount: colCount, coverWidth: w)
+                coverGrid(books: headGrid, colCount: colCount, coverWidth: w)
                     .padding(.horizontal, 14)
             }
 
             if vm.activeShelfFilter == "All", !discovery.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text("Beyond your shelf")
-                            .font(.system(size: 16, weight: .semibold, design: .serif))
-                            .foregroundStyle(ReaderPalette.label)
-                        Spacer()
-                        Button("See all") {
-                            vm.activeShelfFilter = "For You"
-                        }
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(ReaderPalette.accent)
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.horizontal, 14)
+                beyondShelfRailSection(works: discovery)
+            }
 
-                    Group {
-                        if isSnapshot {
-                            Color.clear
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 176)
-                                .overlay(alignment: .topLeading) {
-                                    discoveryRailRow(works: discovery)
-                                        .fixedSize(horizontal: true, vertical: false)
+            if !tailGrid.isEmpty {
+                coverGrid(books: tailGrid, colCount: colCount, coverWidth: w)
+                    .padding(.horizontal, 14)
+            }
+        }
+        .padding(.vertical, 14)
+    }
+
+    private func beyondShelfRailSection(works: [ManifoldReaderWork]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Beyond your shelf")
+                    .font(.system(size: 16, weight: .semibold, design: .serif))
+                    .foregroundStyle(ReaderPalette.label)
+                Spacer()
+                Button("See all") {
+                    ReaderHaptics.selection()
+                    vm.activeShelfFilter = "For You"
+                }
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(ReaderPalette.accent)
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+
+            Group {
+                if isSnapshot {
+                    Color.clear
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 158)
+                        .overlay(alignment: .topLeading) {
+                            discoveryRailRow(works: works)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                        .clipped()
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        discoveryRailRow(works: works)
+                    }
+                }
+            }
+        }
+    }
+
+    private func savedGridContent(colCount: Int, totalWidth: CGFloat) -> some View {
+        let discoverySaved = vm.wishlistedDiscoveryWorks.filter { vm.ownedBook(for: $0) == nil }
+        let ownedSaved = vm.filteredShelfBooks
+        let w = cardWidth(for: totalWidth, colCount: colCount)
+
+        return VStack(alignment: .leading, spacing: 16) {
+            if ownedSaved.isEmpty && discoverySaved.isEmpty {
+                Text("Bookmark titles from Beyond your shelf to track copies to find or read next.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(ReaderPalette.secondary)
+                    .padding(.horizontal, 14)
+            } else {
+                if !ownedSaved.isEmpty {
+                    coverGrid(books: ownedSaved, colCount: colCount, coverWidth: w)
+                        .padding(.horizontal, 14)
+                }
+                if !discoverySaved.isEmpty {
+                    let rows = chunked(discoverySaved, size: colCount)
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                            HStack(alignment: .top, spacing: 12) {
+                                ForEach(row) { work in
+                                    DiscoveryGridCard(
+                                        work: work,
+                                        coverWidth: w,
+                                        isSaved: true,
+                                        isSnapshot: isSnapshot,
+                                        onTap: { Task { await vm.openOrInspect(work) } }
+                                    )
+                                    .frame(maxWidth: .infinity, alignment: .topLeading)
                                 }
-                                .clipped()
-                        } else {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                discoveryRailRow(works: discovery)
+                                if row.count < colCount {
+                                    ForEach(0..<(colCount - row.count), id: \.self) { _ in
+                                        Color.clear.frame(maxWidth: .infinity)
+                                    }
+                                }
                             }
                         }
                     }
+                    .padding(.horizontal, 14)
                 }
             }
         }
@@ -305,7 +427,20 @@ public struct ShelfView: View {
                             isSnapshot: isSnapshot,
                             isServerConnected: vm.isServerConnected,
                             isBusy: vm.isBusyBookId == book.id,
-                            onOpen: { Task { await vm.openBook(book) } }
+                            hasAtlasMatch: vm.manifoldWork(for: book) != nil,
+                            onOpen: { Task { await vm.openBook(book) } },
+                            onToggleOffline: {
+                                Task {
+                                    if book.isOfflineCached {
+                                        await vm.evictOfflineBook(book)
+                                    } else {
+                                        await vm.downloadForOffline(book)
+                                    }
+                                }
+                            },
+                            onShowInAtlas: {
+                                vm.focusBookInAtlas(book)
+                            }
                         )
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                     }
@@ -346,7 +481,10 @@ private struct HeroContinueCard: View {
     let serverURL: String
     let isSnapshot: Bool
     let isServerConnected: Bool
+    let hasAtlasMatch: Bool
     let onResume: () -> Void
+    let onToggleOffline: () -> Void
+    let onShowInAtlas: () -> Void
 
     var body: some View {
         Button(action: onResume) {
@@ -354,8 +492,8 @@ private struct HeroContinueCard: View {
                 BookCoverView(
                     book: book,
                     serverURL: serverURL,
-                    width: 72,
-                    height: 108,
+                    width: 78,
+                    height: 117,
                     isSnapshot: isSnapshot,
                     reloadToken: isServerConnected
                 )
@@ -365,6 +503,7 @@ private struct HeroContinueCard: View {
                         .font(.system(size: 16, weight: .semibold, design: .serif))
                         .foregroundStyle(ReaderPalette.label)
                         .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                         .multilineTextAlignment(.leading)
 
                     if !book.author.isEmpty && book.author.caseInsensitiveCompare("Unknown") != .orderedSame {
@@ -402,6 +541,22 @@ private struct HeroContinueCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button(action: onResume) {
+                Label("Open", systemImage: "book.pages")
+            }
+            Button(action: onToggleOffline) {
+                Label(
+                    book.isOfflineCached ? "Remove offline copy" : "Download offline",
+                    systemImage: book.isOfflineCached ? "trash" : "arrow.down.circle"
+                )
+            }
+            if hasAtlasMatch {
+                Button(action: onShowInAtlas) {
+                    Label("Show in Atlas", systemImage: "sparkles")
+                }
+            }
+        }
     }
 }
 
@@ -412,18 +567,25 @@ private struct BookGridCard: View {
     let isSnapshot: Bool
     let isServerConnected: Bool
     let isBusy: Bool
+    let hasAtlasMatch: Bool
     let onOpen: () -> Void
+    let onToggleOffline: () -> Void
+    let onShowInAtlas: () -> Void
 
-    private var quietSubtitle: String {
+    private var cache = AssetImageCache.shared
+
+    private var quietAuthor: String {
         let a = book.author.trimmingCharacters(in: .whitespacesAndNewlines)
         if !a.isEmpty && a.caseInsensitiveCompare("Unknown") != .orderedSame {
             return a.components(separatedBy: ";").first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? a
         }
-        if let y = book.year, y > 0 { return String(y) }
-        return book.genre
+        if !book.genre.isEmpty && book.genre != "Library" { return book.genre }
+        return book.format.label
     }
 
     var body: some View {
+        let hasRealArt = !isSnapshot && cache.hasImage(forBookId: book.id)
+
         Button(action: onOpen) {
             VStack(alignment: .leading, spacing: 6) {
                 ZStack(alignment: .bottom) {
@@ -467,20 +629,44 @@ private struct BookGridCard: View {
                     }
                 }
 
-                Text(book.title.components(separatedBy: " — ").first ?? book.title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(ReaderPalette.label)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
+                if hasRealArt {
+                    Text(book.title.components(separatedBy: " — ").first ?? book.title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(ReaderPalette.label)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
 
-                Text(quietSubtitle)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(ReaderPalette.secondary)
-                    .lineLimit(1)
+                    Text(quietAuthor)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(ReaderPalette.secondary)
+                        .lineLimit(1)
+                } else {
+                    Text(quietAuthor)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(ReaderPalette.secondary)
+                        .lineLimit(1)
+                }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button(action: onOpen) {
+                Label("Open", systemImage: "book.pages")
+            }
+            Button(action: onToggleOffline) {
+                Label(
+                    book.isOfflineCached ? "Remove offline copy" : "Download offline",
+                    systemImage: book.isOfflineCached ? "trash" : "arrow.down.circle"
+                )
+            }
+            if hasAtlasMatch {
+                Button(action: onShowInAtlas) {
+                    Label("Show in Atlas", systemImage: "sparkles")
+                }
+            }
+        }
     }
 }
 
@@ -490,22 +676,31 @@ private struct DiscoveryRailCard: View {
     let isSnapshot: Bool
     let onTap: () -> Void
 
+    private var cache = AssetImageCache.shared
+
     private var badgeText: String {
         if isSaved { return "Saved" }
         return (work.epubURL != nil || work.openAccessURL != nil) ? "Free" : "BYO"
     }
 
+    private var shortCreator: String {
+        work.creator.components(separatedBy: ";").first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? work.creator
+    }
+
     var body: some View {
+        let workBook = work.toBookItem()
+        let hasRealArt = !isSnapshot && cache.hasImage(forBookId: workBook.id)
+
         Button(action: onTap) {
             VStack(alignment: .leading, spacing: 5) {
                 BookCoverView(
-                    book: work.toBookItem(),
+                    book: workBook,
                     serverURL: "",
                     width: 86,
                     height: 128,
                     isSnapshot: isSnapshot
                 )
-                .overlay(alignment: .topTrailing) {
+                .overlay(alignment: .bottomTrailing) {
                     Text(badgeText)
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.white)
@@ -518,15 +713,18 @@ private struct DiscoveryRailCard: View {
                         .padding(5)
                 }
 
-                Text(work.title)
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(ReaderPalette.label)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .frame(width: 86, alignment: .leading)
+                if hasRealArt {
+                    Text(work.title)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(ReaderPalette.label)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+                        .frame(width: 86, alignment: .leading)
+                }
 
-                Text(work.creator.components(separatedBy: ";").first ?? work.creator)
-                    .font(.system(size: 10))
+                Text(shortCreator)
+                    .font(.system(size: hasRealArt ? 10 : 10.5, weight: hasRealArt ? .regular : .medium))
                     .foregroundStyle(ReaderPalette.secondary)
                     .lineLimit(1)
                     .frame(width: 86, alignment: .leading)
@@ -544,22 +742,31 @@ private struct DiscoveryGridCard: View {
     let isSnapshot: Bool
     let onTap: () -> Void
 
+    private var cache = AssetImageCache.shared
+
     private var badgeText: String {
         if isSaved { return "Saved" }
         return (work.epubURL != nil || work.openAccessURL != nil) ? "Free" : "BYO"
     }
 
+    private var shortCreator: String {
+        work.creator.components(separatedBy: ";").first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? work.creator
+    }
+
     var body: some View {
+        let workBook = work.toBookItem()
+        let hasRealArt = !isSnapshot && cache.hasImage(forBookId: workBook.id)
+
         Button(action: onTap) {
             VStack(alignment: .leading, spacing: 6) {
                 BookCoverView(
-                    book: work.toBookItem(),
+                    book: workBook,
                     serverURL: "",
                     width: coverWidth,
                     height: coverWidth.map { ($0 * 1.48).rounded() },
                     isSnapshot: isSnapshot
                 )
-                .overlay(alignment: .topTrailing) {
+                .overlay(alignment: .bottomTrailing) {
                     Text(badgeText)
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.white)
@@ -572,16 +779,24 @@ private struct DiscoveryGridCard: View {
                         .padding(5)
                 }
 
-                Text(work.title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(ReaderPalette.label)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
+                if hasRealArt {
+                    Text(work.title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(ReaderPalette.label)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
 
-                Text(work.creator.components(separatedBy: ";").first ?? work.creator)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(ReaderPalette.secondary)
-                    .lineLimit(1)
+                    Text(shortCreator)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(ReaderPalette.secondary)
+                        .lineLimit(1)
+                } else {
+                    Text(shortCreator)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(ReaderPalette.secondary)
+                        .lineLimit(1)
+                }
             }
             .contentShape(Rectangle())
         }
@@ -595,8 +810,10 @@ private struct BookShelfListRow: View {
     let isSnapshot: Bool
     let isServerConnected: Bool
     let isBusy: Bool
+    let hasAtlasMatch: Bool
     let onOpen: () -> Void
     let onToggleOffline: () -> Void
+    let onShowInAtlas: () -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -660,5 +877,21 @@ private struct BookShelfListRow: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .background(ReaderPalette.background)
+        .contextMenu {
+            Button(action: onOpen) {
+                Label("Open", systemImage: "book.pages")
+            }
+            Button(action: onToggleOffline) {
+                Label(
+                    book.isOfflineCached ? "Remove offline copy" : "Download offline",
+                    systemImage: book.isOfflineCached ? "trash" : "arrow.down.circle"
+                )
+            }
+            if hasAtlasMatch {
+                Button(action: onShowInAtlas) {
+                    Label("Show in Atlas", systemImage: "sparkles")
+                }
+            }
+        }
     }
 }

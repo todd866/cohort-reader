@@ -494,6 +494,13 @@ public actor ReaderStore {
         return out
     }
 
+    public func deleteHighlight(id: String) throws {
+        let stmt = try prepare("DELETE FROM highlights WHERE id = ?;")
+        defer { sqlite3_finalize(stmt) }
+        bindText(stmt, 1, id)
+        try stepDone(stmt)
+    }
+
     // MARK: - Offline File Cache (Excluded from iCloud Device Backup)
 
     public func cachedFileURL(bookId: String, format: BookFormat) -> URL {
@@ -534,6 +541,26 @@ public actor ReaderStore {
         let upd = try prepare("UPDATE books SET is_offline = 0, local_path = NULL WHERE id = ?;")
         defer { sqlite3_finalize(upd) }
         bindText(upd, 1, bookId)
+        try stepDone(upd)
+    }
+
+    /// Removes cached files and offline flags for remote/open-access editions while keeping user-imported files intact.
+    public func evictAllCachedRemoteBooks() throws {
+        let sel = try prepare("SELECT local_path FROM books WHERE is_offline = 1 AND source != ?;")
+        defer { sqlite3_finalize(sel) }
+        bindText(sel, 1, BookSource.localImport.rawValue)
+        var paths: [String] = []
+        while sqlite3_step(sel) == SQLITE_ROW {
+            if let path = columnOptionalText(sel, 0) {
+                paths.append(path)
+            }
+        }
+        for path in paths where FileManager.default.fileExists(atPath: path) {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+        let upd = try prepare("UPDATE books SET is_offline = 0, local_path = NULL WHERE is_offline = 1 AND source != ?;")
+        defer { sqlite3_finalize(upd) }
+        bindText(upd, 1, BookSource.localImport.rawValue)
         try stepDone(upd)
     }
 

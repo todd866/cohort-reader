@@ -6,6 +6,8 @@ public struct SearchLibraryView: View {
     @Environment(\.readerSnapshotMode) private var isSnapshot
     @Bindable public var vm: ReaderViewModel
 
+    private let suggestedTopics = ["Statecraft", "Neuroscience", "Systems", "History", "Literature", "Biology"]
+
     public init(vm: ReaderViewModel) {
         self.vm = vm
     }
@@ -46,6 +48,15 @@ public struct SearchLibraryView: View {
                 || ($0.subject?.lowercased().contains(q) ?? false)
                 || $0.workId.lowercased().contains(q)
         }
+    }
+
+    private func conciseAuthors(_ raw: String) -> String {
+        let parts = raw
+            .split(separator: ";")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let first = parts.first else { return raw }
+        return parts.count > 1 ? "\(first) et al." : first
     }
 
     public var body: some View {
@@ -107,6 +118,7 @@ public struct SearchLibraryView: View {
                 ForEach(SearchScope.allCases, id: \.self) { scope in
                     let sel = vm.searchScope == scope
                     Button {
+                        ReaderHaptics.selection()
                         vm.searchScope = scope
                     } label: {
                         Text(scope.rawValue)
@@ -128,6 +140,31 @@ public struct SearchLibraryView: View {
             .padding(.horizontal, 14)
             .padding(.bottom, 8)
             .background(ReaderPalette.background)
+
+            if vm.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(suggestedTopics, id: \.self) { topic in
+                            Button {
+                                ReaderHaptics.selection()
+                                vm.searchQuery = topic
+                            } label: {
+                                Text(topic)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(ReaderPalette.secondary)
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 4)
+                                    .background(ReaderPalette.elevated, in: Capsule())
+                                    .overlay(Capsule().stroke(ReaderPalette.hairline, lineWidth: 0.75))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 8)
+                }
+                .background(ReaderPalette.background)
+            }
 
             Divider()
 
@@ -151,13 +188,20 @@ public struct SearchLibraryView: View {
                                         .font(.system(size: 13.5, weight: .semibold))
                                         .foregroundStyle(ReaderPalette.label)
                                         .lineLimit(2)
+                                        .fixedSize(horizontal: false, vertical: true)
                                         .multilineTextAlignment(.leading)
-                                    Text(book.shortCitation)
+                                    Text(conciseAuthors(book.author))
                                         .font(.system(size: 11.5))
                                         .foregroundStyle(ReaderPalette.secondary)
                                         .lineLimit(1)
                                 }
                                 Spacer(minLength: 4)
+                                if let year = book.year, year > 0 {
+                                    Text(String(year))
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(ReaderPalette.secondary)
+                                        .monospacedDigit()
+                                }
                                 if book.isOfflineCached {
                                     Image(systemName: "arrow.down.circle.fill")
                                         .font(.system(size: 13))
@@ -192,13 +236,20 @@ public struct SearchLibraryView: View {
                                             .font(.system(size: 13.5, weight: .semibold))
                                             .foregroundStyle(ReaderPalette.label)
                                             .lineLimit(2)
+                                            .fixedSize(horizontal: false, vertical: true)
                                             .multilineTextAlignment(.leading)
-                                        Text("\(work.creator) · \(String(work.year))")
+                                        Text(conciseAuthors(work.creator))
                                             .font(.system(size: 11.5))
                                             .foregroundStyle(ReaderPalette.secondary)
                                             .lineLimit(1)
                                     }
                                     Spacer(minLength: 4)
+                                    if work.year > 0 {
+                                        Text(String(work.year))
+                                            .font(.system(size: 11, design: .monospaced))
+                                            .foregroundStyle(ReaderPalette.secondary)
+                                            .monospacedDigit()
+                                    }
                                     Text((work.epubURL != nil || work.openAccessURL != nil) ? "Free" : "BYO")
                                         .font(.system(size: 10.5, weight: .medium))
                                         .foregroundStyle((work.epubURL != nil || work.openAccessURL != nil) ? ReaderPalette.accent : ReaderPalette.tvAmber)
@@ -230,6 +281,11 @@ public struct SettingsSheet: View {
         self.vm = vm
     }
 
+    private var budgetUsageRatio: Double {
+        let budget = Double(max(1, vm.autoDownloadBudgetMB)) * 1024 * 1024
+        return min(max(Double(vm.offlineBytes) / budget, 0), 1)
+    }
+
     public var body: some View {
         if isSnapshot {
             snapshotSettingsBody
@@ -258,13 +314,32 @@ public struct SettingsSheet: View {
                             Text("350 MB").tag(350)
                             Text("750 MB").tag(750)
                         }
-                        LabeledContent("Cached offline", value: formatBytes(vm.offlineBytes))
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Cached offline")
+                                Spacer()
+                                Text("\(formatBytes(vm.offlineBytes)) / \(vm.autoDownloadBudgetMB) MB")
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .foregroundStyle(ReaderPalette.secondary)
+                                    .monospacedDigit()
+                            }
+                            InstrumentGauge(ratio: budgetUsageRatio, tint: ReaderPalette.cohortGreen)
+                        }
                         if let activeTitle = vm.autoDownloadActiveTitle {
                             LabeledContent("Downloading", value: activeTitle)
                         }
                         if vm.pendingOutboxCount > 0 {
                             LabeledContent("Pending progress sync", value: "\(vm.pendingOutboxCount)")
                         }
+                        Button("Download likely reads now") {
+                            vm.triggerManualPrefetch()
+                        }
+                        .disabled(!vm.isServerConnected || vm.autoDownloadActiveTitle != nil)
+
+                        Button("Clear offline cache", role: .destructive) {
+                            Task { await vm.clearOfflineCache() }
+                        }
+                        .disabled(vm.offlineBytes == 0)
                     }
 
                     Section("Manifold Public Hub") {
@@ -336,7 +411,10 @@ public struct SettingsSheet: View {
                 Divider()
                 settingsFieldRow("Storage budget", value: "\(vm.autoDownloadBudgetMB) MB", isPlaceholder: false)
                 Divider()
-                settingsFieldRow("Cached offline", value: formatBytes(vm.offlineBytes), isPlaceholder: false)
+                VStack(alignment: .leading, spacing: 6) {
+                    settingsFieldRow("Cached offline", value: "\(formatBytes(vm.offlineBytes)) / \(vm.autoDownloadBudgetMB) MB", isPlaceholder: false)
+                    InstrumentGauge(ratio: budgetUsageRatio, tint: ReaderPalette.cohortGreen)
+                }
             }
 
             settingsCard("Manifold Public Hub") {

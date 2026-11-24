@@ -120,7 +120,7 @@ public struct DiscoveryDetailSheet: View {
             }
 
             // Action Buttons
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 if let owned {
                     Button {
                         dismiss()
@@ -138,7 +138,7 @@ public struct DiscoveryDetailSheet: View {
                     Button {
                         Task { await vm.downloadDiscoveryWork(work) }
                     } label: {
-                        Label("Download free edition", systemImage: "arrow.down.circle.fill")
+                        Label("Download free", systemImage: "arrow.down.circle.fill")
                             .font(.system(size: 13.5, weight: .semibold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 10)
@@ -151,7 +151,7 @@ public struct DiscoveryDetailSheet: View {
                         Task { await vm.toggleWishlist(workId: work.workId) }
                     } label: {
                         Label(isSaved ? "Saved" : "Want to read", systemImage: isSaved ? "bookmark.fill" : "bookmark")
-                            .font(.system(size: 13.5, weight: .semibold))
+                            .font(.system(size: 13, weight: .semibold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 10)
                             .background(isSaved ? ReaderPalette.accent : ReaderPalette.surface, in: RoundedRectangle(cornerRadius: 8))
@@ -164,8 +164,8 @@ public struct DiscoveryDetailSheet: View {
                         dismiss()
                         vm.isImporterPresented = true
                     } label: {
-                        Label("Import file", systemImage: "square.and.arrow.down")
-                            .font(.system(size: 13.5, weight: .medium))
+                        Label("Import", systemImage: "square.and.arrow.down")
+                            .font(.system(size: 13, weight: .medium))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 10)
                             .background(ReaderPalette.surface, in: RoundedRectangle(cornerRadius: 8))
@@ -174,6 +174,21 @@ public struct DiscoveryDetailSheet: View {
                     }
                     .buttonStyle(.plain)
                 }
+
+                Button {
+                    dismiss()
+                    vm.focusWorkInAtlas(work)
+                } label: {
+                    Label("Atlas", systemImage: "sparkles")
+                        .font(.system(size: 13, weight: .medium))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(ReaderPalette.surface, in: RoundedRectangle(cornerRadius: 8))
+                        .foregroundStyle(ReaderPalette.accent)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(ReaderPalette.hairline, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Show in Atlas")
             }
 
             // Find a copy externally when unowned
@@ -246,7 +261,9 @@ public struct DiscoveryDetailSheet: View {
                                     Text(target.title)
                                         .font(.system(size: 12.5, weight: .medium))
                                         .foregroundStyle(ReaderPalette.label)
-                                        .lineLimit(1)
+                                        .lineLimit(2)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .multilineTextAlignment(.leading)
                                     Text(inLib ? "\(target.creator) · In library" : target.creator)
                                         .font(.system(size: 11))
                                         .foregroundStyle(inLib ? ReaderPalette.cohortGreen : ReaderPalette.secondary)

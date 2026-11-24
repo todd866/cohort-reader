@@ -9,6 +9,20 @@ import ReaderModel
 import ReaderStorage
 import SwiftUI
 
+public struct InBookSearchHit: Identifiable, Sendable, Hashable {
+    public var id: String
+    public var spineIndex: Int
+    public var chapterTitle: String
+    public var snippet: String
+
+    public init(id: String, spineIndex: Int, chapterTitle: String, snippet: String) {
+        self.id = id
+        self.spineIndex = spineIndex
+        self.chapterTitle = chapterTitle
+        self.snippet = snippet
+    }
+}
+
 public enum ReaderTab: String, CaseIterable, Sendable {
     case shelf = "Library"
     case read = "Read"
@@ -43,12 +57,17 @@ public final class ReaderViewModel {
     public var shelves: [LibraryShelf] = []
     public var activeShelfFilter: String = "All"
     public var shelfUsesListLayout: Bool = false
+    public var shelfSortOrder: ShelfSortOrder = .recent
 
     // Manifold coordinates & Reading Lenses
     public var manifoldWorks: [ManifoldReaderWork] = ShowcaseCatalog.works
     public var lenses: [ReaderLens] = ShowcaseCatalog.lenses
     public var selectedLensId: String = ShowcaseCatalog.lenses.first?.id ?? ""
     public var selectedMapWorkId: String = "isbn:9780300078152"
+    public var mapZoom: CGFloat = 1.0
+    public var mapPan: CGSize = .zero
+    public var mapGestureStartZoom: CGFloat?
+    public var mapGestureStartPan: CGSize?
     public var shardCacheHits: Int = 0
     public var manifoldHubURL: String
     public var presentedDiscoveryWork: ManifoldReaderWork?
@@ -77,6 +96,10 @@ public final class ReaderViewModel {
     public var presentedMarginNote: MarginNote?
     public var isTOCPresented: Bool = false
     public var tocSegment: Int = 0
+    public var tocSearchQuery: String = ""
+    public var inBookMatches: [InBookSearchHit] = []
+    public var scrubChapterTarget: Int?
+    public var scrubPDFPageTarget: Int?
     public var isTypographyPresented: Bool = false
     public var isReaderChromeHidden: Bool = false
     public var typography: ReaderTypography = .default
@@ -122,6 +145,10 @@ public final class ReaderViewModel {
             self.autoDownloadBudgetMB = savedBudget
         }
         self.shelfUsesListLayout = defaults.bool(forKey: "cohortReader.shelfUsesListLayout")
+        if let rawSort = defaults.string(forKey: "cohortReader.shelfSortOrder"),
+           let parsedSort = ShelfSortOrder(rawValue: rawSort) {
+            self.shelfSortOrder = parsedSort
+        }
         self.manifoldHubURL = savedHub
         self.serverURL = savedServer
         if !savedServer.isEmpty {
@@ -133,6 +160,7 @@ public final class ReaderViewModel {
         defaults.set(autoDownloadEnabled, forKey: "cohortReader.autoDownloadEnabled")
         defaults.set(autoDownloadBudgetMB, forKey: "cohortReader.autoDownloadBudgetMB")
         defaults.set(shelfUsesListLayout, forKey: "cohortReader.shelfUsesListLayout")
+        defaults.set(shelfSortOrder.rawValue, forKey: "cohortReader.shelfSortOrder")
     }
 
     public func bootstrap(loadSampleBook: Bool = true, runNetworkSync: Bool = true) async {
@@ -390,20 +418,74 @@ public final class ReaderViewModel {
         shelves = list
     }
 
+    public func manifoldWork(for book: BookItem) -> ManifoldReaderWork? {
+        if let cid = book.canonicalId, let exact = manifoldWorks.first(where: { $0.workId == cid }) {
+            return exact
+        }
+        let targetKey = Self.normalizedTitleKey(book.title)
+        guard targetKey.count >= 5 else { return nil }
+        return manifoldWorks.first { work in
+            let wKey = Self.normalizedTitleKey(work.title)
+            return wKey == targetKey || (wKey.count >= 10 && wKey.hasPrefix(targetKey)) || (targetKey.count >= 10 && targetKey.hasPrefix(wKey))
+        }
+    }
+
+    public func focusWorkInAtlas(_ work: ManifoldReaderWork) {
+        selectedMapWorkId = work.workId
+        mapZoom = 1.0
+        mapPan = .zero
+        presentedDiscoveryWork = nil
+        selectedTab = .map
+    }
+
+    public func focusBookInAtlas(_ book: BookItem) {
+        if let work = manifoldWork(for: book) {
+            focusWorkInAtlas(work)
+        }
+    }
+
+    public var wishlistedDiscoveryWorks: [ManifoldReaderWork] {
+        manifoldWorks.filter { wishlistIds.contains($0.workId) }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
     public var filteredShelfBooks: [BookItem] {
+        let base: [BookItem]
         switch activeShelfFilter {
         case "All":
-            return books
+            base = books
         case "Reading", "Reading Now":
-            return books.filter { ($0.locator?.fraction ?? 0) > 0 && ($0.locator?.fraction ?? 0) < 0.98 }
+            base = books.filter { ($0.locator?.fraction ?? 0) > 0 && ($0.locator?.fraction ?? 0) < 0.98 }
         case "Offline":
-            return books.filter(\.isOfflineCached)
+            base = books.filter(\.isOfflineCached)
+        case "Saved":
+            base = books.filter { $0.canonicalId.map(wishlistIds.contains) == true }
         case "Papers":
-            return books.filter { $0.format == .article || ($0.canonicalId?.hasPrefix("doi:") ?? false) || ($0.canonicalId?.hasPrefix("pmid:") ?? false) || ($0.canonicalId?.hasPrefix("arxiv:") ?? false) }
+            base = books.filter { $0.format == .article || ($0.canonicalId?.hasPrefix("doi:") ?? false) || ($0.canonicalId?.hasPrefix("pmid:") ?? false) || ($0.canonicalId?.hasPrefix("arxiv:") ?? false) }
         case "Books":
-            return books.filter { $0.format == .epub || $0.genre == "Nonfiction" || $0.genre == "Literature" || ($0.canonicalId?.hasPrefix("gutenberg:") ?? false) || ($0.canonicalId?.hasPrefix("isbn:") ?? false) }
+            base = books.filter { $0.format == .epub || $0.genre == "Nonfiction" || $0.genre == "Literature" || ($0.canonicalId?.hasPrefix("gutenberg:") ?? false) || ($0.canonicalId?.hasPrefix("isbn:") ?? false) }
         default:
-            return books.filter { $0.genre == activeShelfFilter || $0.shelfNames.contains(activeShelfFilter) }
+            base = books.filter { $0.genre == activeShelfFilter || $0.shelfNames.contains(activeShelfFilter) }
+        }
+
+        switch shelfSortOrder {
+        case .recent:
+            return base
+        case .title:
+            return base.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        case .author:
+            return base.sorted {
+                let cmp = $0.author.localizedCaseInsensitiveCompare($1.author)
+                if cmp != .orderedSame { return cmp == .orderedAscending }
+                return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
+        case .progress:
+            return base.sorted {
+                let fa = $0.locator?.fraction ?? 0
+                let fb = $1.locator?.fraction ?? 0
+                if abs(fa - fb) > 0.0001 { return fa > fb }
+                return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
         }
     }
 
@@ -421,12 +503,16 @@ public final class ReaderViewModel {
         defaults.set(book.id, forKey: "cohortReader.lastBookId")
         activeHighlights = (try? await store.listHighlights(bookId: book.id)) ?? []
         activeNotes = (try? await store.loadMarginNotes(bookId: book.id)) ?? []
+        tocSearchQuery = ""
+        inBookMatches = []
+        scrubChapterTarget = nil
+        scrubPDFPageTarget = nil
         if activeNotes.isEmpty && book.canonicalId == "gutenberg:84" {
             activeNotes = ShowcaseCatalog.sampleMarginNotes
         }
 
-        if let cid = book.canonicalId, manifoldWorks.contains(where: { $0.workId == cid }) {
-            selectedMapWorkId = cid
+        if let work = manifoldWork(for: book) {
+            selectedMapWorkId = work.workId
         }
 
         if let localPath = book.localFilePath, FileManager.default.fileExists(atPath: localPath) {
@@ -485,6 +571,55 @@ public final class ReaderViewModel {
         lastHandoffMessage = "Saved highlight in \(book.title)"
     }
 
+    public func deleteHighlight(_ highlight: ReadingHighlight) async {
+        try? await store.deleteHighlight(id: highlight.id)
+        activeHighlights.removeAll { $0.id == highlight.id }
+    }
+
+    public func runInBookSearch() {
+        let q = tocSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 2, let doc = activeEPUB else {
+            inBookMatches = []
+            return
+        }
+        var results: [InBookSearchHit] = []
+        for idx in 0..<doc.spineHrefs.count {
+            guard let chapter = doc.chapter(at: idx) else { continue }
+            let text = chapter.plainText
+            var searchStart = text.startIndex
+            while results.count < 30,
+                  let found = text.range(of: q, options: [.caseInsensitive, .diacriticInsensitive], range: searchStart..<text.endIndex) {
+                let rawStart = text.index(found.lowerBound, offsetBy: -36, limitedBy: text.startIndex) ?? text.startIndex
+                let rawEnd = text.index(found.upperBound, offsetBy: 56, limitedBy: text.endIndex) ?? text.endIndex
+                let slice = text[rawStart..<rawEnd]
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let prefix = rawStart > text.startIndex ? "..." : ""
+                let suffix = rawEnd < text.endIndex ? "..." : ""
+                results.append(
+                    InBookSearchHit(
+                        id: "\(idx):\(results.count)",
+                        spineIndex: idx,
+                        chapterTitle: chapter.title,
+                        snippet: "\(prefix)\(slice)\(suffix)"
+                    )
+                )
+                searchStart = found.upperBound
+            }
+            if results.count >= 30 { break }
+        }
+        inBookMatches = results
+    }
+
+    public func estimatedChapterMinutesRemaining() -> Int? {
+        guard let ch = currentChapter(), ch.wordCount >= 40 else { return nil }
+        let loc = activeBook?.locator
+        let frac = (loc?.spine == ch.index) ? min(max(loc?.fraction ?? 0, 0), 1) : 0
+        let remainingWords = max(0, Int(Double(ch.wordCount) * (1.0 - frac)))
+        guard remainingWords > 0 else { return 0 }
+        return max(1, Int(ceil(Double(remainingWords) / 230.0)))
+    }
+
     private func loadLocalDocument(url: URL, book: BookItem) {
         if book.format == .epub {
             do {
@@ -492,6 +627,14 @@ public final class ReaderViewModel {
                 activeEPUB = doc
                 let spine = book.locator?.spine ?? 0
                 activeEPUBSpineIndex = min(max(spine, 0), max(0, doc.spineHrefs.count - 1))
+                if !AssetImageCache.shared.hasImage(forBookId: book.id),
+                   let coverHref = doc.coverHref,
+                   let coverData = doc.resources[coverHref] {
+                    let bookId = book.id
+                    Task {
+                        await AssetImageCache.shared.registerLocalCover(data: coverData, bookId: bookId)
+                    }
+                }
             } catch {
                 bannerError = "Failed to open EPUB: \(error.localizedDescription)"
             }
@@ -503,6 +646,17 @@ public final class ReaderViewModel {
             } else {
                 activePDFPageIndex = 0
             }
+            if !AssetImageCache.shared.hasImage(forBookId: book.id) {
+                let bookId = book.id
+                Task {
+                    let pngData = await Task.detached(priority: .utility) {
+                        PDFInspector.renderFirstPagePNG(url: url, maxDimension: 360)
+                    }.value
+                    if let pngData {
+                        await AssetImageCache.shared.registerLocalCover(data: pngData, bookId: bookId)
+                    }
+                }
+            }
         }
     }
 
@@ -510,12 +664,13 @@ public final class ReaderViewModel {
         activeEPUB?.chapter(at: activeEPUBSpineIndex)
     }
 
-    public func currentChapterHTML() -> String {
+    public func currentChapterHTML(resolvedTheme: ReaderTheme? = nil) -> String {
         guard let chapter = currentChapter(),
               let raw = String(data: chapter.xhtmlData, encoding: .utf8) ?? String(data: chapter.xhtmlData, encoding: .isoLatin1) else {
             return ""
         }
         let chapterNotes = activeNotes.filter { $0.spine == chapter.index }
+        let chapterHighlights = activeHighlights.filter { $0.spine == chapter.index }
         let loc = activeBook?.locator
         let frac = (loc?.spine == chapter.index) ? (loc?.fraction ?? 0) : 0
         let word = (loc?.spine == chapter.index) ? loc?.wordOffset : nil
@@ -524,7 +679,9 @@ public final class ReaderViewModel {
             typography: typography,
             notes: chapterNotes,
             initialFraction: frac,
-            initialWordOffset: word
+            initialWordOffset: word,
+            resolvedTheme: resolvedTheme,
+            highlights: chapterHighlights
         )
     }
 
@@ -710,6 +867,28 @@ public final class ReaderViewModel {
         }
     }
 
+    public func clearOfflineCache() async {
+        autoDownloadTask?.cancel()
+        autoDownloadActiveTitle = nil
+        do {
+            try await store.evictAllCachedRemoteBooks()
+            books = visibleLibraryBooks(from: try await store.listBooks())
+            rebuildShelves()
+            offlineBytes = await store.cachedBookBytes()
+            if activeBook?.source != .localImport {
+                activeBook?.isOfflineCached = false
+                activeBook?.localFilePath = nil
+            }
+        } catch {
+            bannerError = error.localizedDescription
+        }
+    }
+
+    public func triggerManualPrefetch() {
+        autoDownloadTask?.cancel()
+        autoDownloadTask = Task { await self.prefetchLikelyReads() }
+    }
+
     // MARK: - Highlight -> Cohort Handoff
 
     public func prepareCohortDraft(quote: String) {
@@ -820,6 +999,7 @@ public final class ReaderViewModel {
             shelves = catalog.shelves.isEmpty ? shelves : catalog.shelves
             if catalog.shelves.isEmpty { rebuildShelves() }
             isServerConnected = true
+            AssetImageCache.shared.resetFailures()
             serverName = name
             serverStatusMessage = "\(name) · \(catalog.items.count) works"
             await flushProgressOutbox()

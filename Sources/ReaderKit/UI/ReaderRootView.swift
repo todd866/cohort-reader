@@ -70,7 +70,15 @@ public struct ReaderRootView: View {
             SettingsSheet(vm: vm)
         }
         .sheet(item: $vm.presentedMarginNote) { note in
-            MarginNoteSheet(note: note, serverURL: vm.serverURL, bookId: vm.activeBook?.id ?? "")
+            MarginNoteSheet(
+                note: note,
+                serverURL: vm.serverURL,
+                bookId: vm.activeBook?.id ?? "",
+                onSendToCohort: {
+                    vm.presentedMarginNote = nil
+                    vm.prepareCohortDraft(quote: "\(note.label) — \"\(note.anchor)\"\n\(note.note)")
+                }
+            )
         }
         .sheet(item: $vm.presentedDiscoveryWork) { work in
             DiscoveryDetailSheet(vm: vm, work: work)

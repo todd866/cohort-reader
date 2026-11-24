@@ -15,6 +15,7 @@ public final class AssetImageCache {
     private var thumbnails: [String: CGImage] = [:]
     private var insertionOrder: [String] = []
     private var inFlight: Set<String> = []
+    private var failedKeys: Set<String> = []
     private let maxMemoryEntries = 180
     private let cacheDir: URL?
 
@@ -32,8 +33,37 @@ public final class AssetImageCache {
         thumbnails[key]
     }
 
+    public func hasImage(forBookId bookId: String) -> Bool {
+        thumbnails["cover:\(bookId)"] != nil
+    }
+
+    public func resetFailures() {
+        failedKeys.removeAll()
+    }
+
+    public func registerLocalCover(data: Data, bookId: String, maxPixelSize: Int = 320) async {
+        let key = "cover:\(bookId)"
+        guard thumbnails[key] == nil, !data.isEmpty else { return }
+        let diskURL = fileURL(forKey: key, maxPixelSize: maxPixelSize)
+        let result: (image: CGImage, jpeg: Data?)? = await Task.detached(priority: .userInitiated) {
+            guard let downsampled = Self.downsampleCGImage(data: data, maxPixelSize: maxPixelSize) else {
+                return nil
+            }
+            return (downsampled, Self.encodeJPEG(cgImage: downsampled))
+        }.value
+        guard let result else { return }
+        failedKeys.remove(key)
+        storeInMemory(result.image, forKey: key)
+        if let diskURL {
+            let toWrite = result.jpeg ?? data
+            await Task.detached(priority: .utility) {
+                try? toWrite.write(to: diskURL, options: .atomic)
+            }.value
+        }
+    }
+
     public func loadIfNeeded(url: URL?, key: String, maxPixelSize: Int) async {
-        guard thumbnails[key] == nil, !inFlight.contains(key) else { return }
+        guard thumbnails[key] == nil, !inFlight.contains(key), !failedKeys.contains(key) else { return }
         let diskURL = fileURL(forKey: key, maxPixelSize: maxPixelSize)
         if diskURL == nil && url == nil { return }
 
@@ -70,9 +100,11 @@ public final class AssetImageCache {
                         try? toWrite.write(to: diskURL, options: .atomic)
                     }.value
                 }
+            } else {
+                failedKeys.insert(key)
             }
         } catch {
-            // Leave fallback cover cleanly in place when offline or unauthenticated.
+            failedKeys.insert(key)
         }
     }
 
@@ -150,11 +182,21 @@ public struct BookCoverView: View {
     private var coverKey: String { "cover:\(book.id)" }
 
     private var remoteURL: URL? {
-        guard book.hasServerCover, !serverURL.isEmpty, !isSnapshot else { return nil }
-        return HomeLibraryClient.coverURL(baseURL: serverURL, bookId: book.id)
+        guard !isSnapshot else { return nil }
+        if book.hasServerCover, !serverURL.isEmpty {
+            return HomeLibraryClient.coverURL(baseURL: serverURL, bookId: book.id)
+        }
+        if let cid = book.canonicalId, cid.hasPrefix("isbn:") {
+            let isbn = String(cid.dropFirst(5))
+            if CanonicalIDNormalizer.isValidISBN13(isbn) {
+                return URL(string: "https://covers.openlibrary.org/b/isbn/\(isbn)-M.jpg?default=false")
+            }
+        }
+        return nil
     }
 
     public var body: some View {
+        let mini = (width ?? 110) < 56
         Group {
             if !isSnapshot, let cg = cache.image(forKey: coverKey) {
                 GeometryReader { geo in
@@ -164,6 +206,17 @@ public struct BookCoverView: View {
                         .frame(width: geo.size.width, height: geo.size.height)
                 }
                 .modifier(CoverSizingModifier(width: width, height: height))
+                .overlay(alignment: .leading) {
+                    HStack(spacing: 0) {
+                        Color.clear.frame(width: mini ? 3 : 5)
+                        Rectangle()
+                            .fill(Color.black.opacity(0.18))
+                            .frame(width: 1)
+                        Rectangle()
+                            .fill(Color.white.opacity(0.14))
+                            .frame(width: 1)
+                    }
+                }
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)

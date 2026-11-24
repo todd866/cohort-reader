@@ -64,7 +64,12 @@ enum SnapshotRunner {
             ReaderRootView(vm: vm)
         }
 
-        // 7. Settings
+        // 7. Typography
+        try renderScenario("typography", targets: targets, outDir: outDir) {
+            TypographySheet(typography: .constant(vm.typography), onChange: {})
+        }
+
+        // 8. Settings
         try renderScenario("settings", targets: targets, outDir: outDir) {
             SettingsSheet(vm: vm)
         }

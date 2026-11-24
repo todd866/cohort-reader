@@ -66,28 +66,50 @@ public enum ReaderPalette {
         }
     }
 
+    public static func resolvedTheme(_ theme: ReaderTheme, colorScheme: ColorScheme) -> ReaderTheme {
+        switch theme {
+        case .auto: return colorScheme == .dark ? .ink : .paper
+        case .paper, .sepia, .ink: return theme
+        }
+    }
+
     public static func themeBackground(_ theme: ReaderTheme) -> Color {
         switch theme {
-        case .paper: return Color(red: 0.984, green: 0.976, blue: 0.961)
-        case .sepia: return Color(red: 0.949, green: 0.914, blue: 0.843)
-        case .ink: return Color(red: 0.067, green: 0.071, blue: 0.090)
+        case .auto, .paper: return Color(red: 0.980, green: 0.973, blue: 0.957)
+        case .sepia: return Color(red: 0.953, green: 0.918, blue: 0.847)
+        case .ink: return Color(red: 0.067, green: 0.067, blue: 0.078)
         }
     }
 
     public static func themeSurface(_ theme: ReaderTheme) -> Color {
         switch theme {
-        case .paper: return Color(red: 0.953, green: 0.937, blue: 0.906)
+        case .auto, .paper: return Color(red: 0.945, green: 0.929, blue: 0.898)
         case .sepia: return Color(red: 0.914, green: 0.871, blue: 0.788)
-        case .ink: return Color(red: 0.106, green: 0.114, blue: 0.141)
+        case .ink: return Color(red: 0.106, green: 0.106, blue: 0.125)
         }
     }
 
     public static func themeForeground(_ theme: ReaderTheme) -> Color {
         switch theme {
-        case .paper: return Color(red: 0.094, green: 0.086, blue: 0.078)
+        case .auto, .paper: return Color(red: 0.094, green: 0.086, blue: 0.078)
         case .sepia: return Color(red: 0.173, green: 0.133, blue: 0.094)
-        case .ink: return Color(red: 0.910, green: 0.922, blue: 0.949)
+        case .ink: return Color(red: 0.925, green: 0.910, blue: 0.875)
         }
+    }
+}
+
+@MainActor
+public enum ReaderHaptics {
+    public static func light() {
+        #if canImport(UIKit)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        #endif
+    }
+
+    public static func selection() {
+        #if canImport(UIKit)
+        UISelectionFeedbackGenerator().selectionChanged()
+        #endif
     }
 }
 
@@ -174,15 +196,6 @@ public struct TypographicCoverView: View {
         book.title.components(separatedBy: " — ").first ?? book.title
     }
 
-    private var shortAuthor: String {
-        let a = book.author.trimmingCharacters(in: .whitespacesAndNewlines)
-        if a.isEmpty || a.caseInsensitiveCompare("Unknown") == .orderedSame {
-            if let year = book.year, year > 0 { return String(year) }
-            return ""
-        }
-        return a.components(separatedBy: ";").first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? a
-    }
-
     private var monogram: String {
         let stop: Set<String> = ["a", "an", "and", "of", "on", "or", "the", "to", "for", "in"]
         let words = displayTitle
@@ -196,10 +209,18 @@ public struct TypographicCoverView: View {
         return String((chosen.first ?? "BK").prefix(2)).uppercased()
     }
 
+    private var footerMark: String {
+        if let year = book.year, year > 0 {
+            return String(year)
+        }
+        return monogram
+    }
+
     public var body: some View {
-        let mini = (width ?? 110) < 74
-        let titleSize: CGFloat = (width ?? 110) < 92 ? 12 : 14.5
-        let authorSize: CGFloat = (width ?? 110) < 92 ? 9.5 : 10.5
+        let w = width ?? 110
+        let mini = w < 82
+        let titleSize: CGFloat = w < 96 ? 12.0 : 14.5
+        let colophonSize: CGFloat = w < 96 ? 9.0 : 9.5
 
         ZStack(alignment: .topLeading) {
             LinearGradient(
@@ -210,7 +231,7 @@ public struct TypographicCoverView: View {
 
             // Vertical bookbinding hinge groove
             HStack(spacing: 0) {
-                Color.clear.frame(width: mini ? 4 : 7)
+                Color.clear.frame(width: mini ? 3.5 : 7)
                 Rectangle()
                     .fill(Color.black.opacity(0.22))
                     .frame(width: 1)
@@ -224,37 +245,36 @@ public struct TypographicCoverView: View {
                 VStack(spacing: 0) {
                     Spacer(minLength: 0)
                     Text(monogram)
-                        .font(.system(size: (width ?? 44) < 40 ? 12 : 15, weight: .bold, design: .serif))
+                        .font(.system(size: w < 40 ? 12 : 15, weight: .bold, design: .serif))
                         .foregroundStyle(Color(red: 0.976, green: 0.957, blue: 0.914))
                     Spacer(minLength: 0)
                 }
-                .padding(.leading, 5)
+                .padding(.leading, 4)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 VStack(alignment: .leading, spacing: 5) {
                     Rectangle()
                         .fill(Color(red: 0.94, green: 0.89, blue: 0.78).opacity(0.45))
-                        .frame(width: 22, height: 1)
+                        .frame(width: w < 72 ? 16 : 22, height: 1)
 
                     Text(displayTitle)
                         .font(.system(size: titleSize, weight: .semibold, design: .serif))
                         .foregroundStyle(Color(red: 0.976, green: 0.957, blue: 0.914))
-                        .lineLimit(3)
-                        .minimumScaleFactor(0.72)
+                        .lineLimit(4)
+                        .minimumScaleFactor(0.70)
                         .multilineTextAlignment(.leading)
 
                     Spacer(minLength: 0)
 
-                    if !shortAuthor.isEmpty {
-                        Text(shortAuthor)
-                            .font(.system(size: authorSize, weight: .medium))
-                            .foregroundStyle(Color(red: 0.94, green: 0.90, blue: 0.83).opacity(0.84))
-                            .lineLimit(1)
-                    }
+                    Text(footerMark)
+                        .font(.system(size: colophonSize, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color(red: 0.94, green: 0.90, blue: 0.83).opacity(0.78))
+                        .tracking(book.year != nil ? 0 : 1.0)
+                        .lineLimit(1)
                 }
-                .padding(.leading, 14)
-                .padding(.trailing, 8)
-                .padding(.vertical, 10)
+                .padding(.leading, w < 72 ? 12 : 14)
+                .padding(.trailing, w < 72 ? 6 : 8)
+                .padding(.vertical, w < 72 ? 8 : 10)
             }
         }
         .modifier(JacketFrameModifier(width: width, height: height))
