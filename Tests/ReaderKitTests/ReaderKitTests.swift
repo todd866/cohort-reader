@@ -14,6 +14,32 @@ import Testing
 
 @Suite("CohortReader Core")
 struct ReaderKitTests {
+    @Test("A highlight is marked sent only when native Cohort accepts the complete draft")
+    @MainActor
+    func draftHandoff() async throws {
+        let store = try ReaderStore(dbPath: ":memory:")
+        let book = BookItem(id: "source", title: "Test & book", author: "", format: .epub, source: .localImport)
+        try await store.upsertBooks([book])
+        let vm = ReaderViewModel(store: store, defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        vm.activeBook = book
+        let quote = String(repeating: "α & +? ", count: 100)
+        let draft = CohortCardDraft(sourceBookId: book.id, canonicalId: nil, sourceTitle: book.title,
+                                    quote: quote, promptHint: "Original cue", tags: ["reader"])
+        for accepted in [false, true] {
+            await vm.sendDraftToCohort(draft, note: "Why & how?", dropDirectory: nil) { url in
+                let fields = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+                #expect(url.scheme == "cohort-study" && url.host == "draft")
+                #expect(fields?.first { $0.name == "quote" }?.value == quote)
+                #expect(fields?.first { $0.name == "prompt" }?.value == "Why & how?")
+                return accepted
+            }
+        }
+        let rows = try await store.listHighlights(bookId: book.id)
+        #expect(rows.count == 2)
+        #expect(rows.filter(\.sentToCohort).count == 1)
+        #expect(rows.allSatisfy { $0.quote == quote && $0.note == "Why & how?" })
+    }
+
     @Test("Sample EPUB round-trip parses OPF, NAV TOC, canonical ID, and chapters")
     func epubRoundTrip() throws {
         let epubData = try SampleShowcaseEPUB.buildFrankensteinSampleData()
@@ -32,6 +58,18 @@ struct ReaderKitTests {
 
         let hits = MarginNoteHighlighter.matchingNotes(inText: ch0.plainText, notes: ShowcaseCatalog.sampleMarginNotes)
         #expect(hits.map(\.id).contains("note-petersburgh"))
+    }
+
+    @Test("ZIP reader accepts data slices and reports invalid limits as errors")
+    func archiveSliceAndLimits() throws {
+        let bytes = Data("chapter".utf8)
+        let archive = try ZIPArchive.write([.init(path: "page", data: bytes)])
+        var prefixed = Data([0])
+        prefixed.append(archive)
+        #expect(try ZIPArchive.read(from: prefixed.dropFirst())["page"] == bytes)
+        var limits = ZipLimits.default
+        limits.maxEntries = -1
+        #expect(throws: ZipError.self) { _ = try ZIPArchive.read(from: archive, limits: limits) }
     }
 
     @Test("ZIPArchive rejects path traversal entries")
@@ -1094,6 +1132,127 @@ struct ReaderKitTests {
         #expect(vm.selectedTab == .search)
         #expect(vm.isInlineFindPresented == false)
     }
+
+    @Test("Offline cache reconciliation, showcase pruning, direct-download filtering, durable covers, and Home Space")
+    @MainActor
+    func offlineFirstReconciliationCoversAndSuggestions() async throws {
+        // 1. Direct download detection rejects HTML article landing pages and accepts real EPUB/PDF/arXiv/Gutenberg
+        let htmlArticle = ManifoldReaderWork(
+            workId: "doi:10.1162/neco_a_00912",
+            title: "Active Inference",
+            creator: "Karl Friston",
+            year: 2017,
+            kind: "paper",
+            format: .article,
+            summary: "Paper",
+            shard: "c1",
+            x: 0.1,
+            y: 0.2,
+            vec32: [],
+            openAccessURL: "https://direct.mit.edu/neco/article/29/1/1/8207"
+        )
+        #expect(htmlArticle.isDirectlyDownloadable == false)
+
+        let directArxiv = ManifoldReaderWork(
+            workId: "arxiv:1706.03762",
+            title: "Attention Is All You Need",
+            creator: "Vaswani",
+            year: 2017,
+            kind: "paper",
+            format: .pdf,
+            summary: "Transformers",
+            shard: "a1",
+            x: 0.4,
+            y: 0.3,
+            vec32: [],
+            openAccessURL: "https://arxiv.org/pdf/1706.03762"
+        )
+        #expect(directArxiv.isDirectlyDownloadable == true)
+
+        // 2. Demo film resonance filter rejects Blender shorts & raw wikidata IDs
+        #expect(ResonanceLink(workId: "wikidata:Q674011", domain: "tv", title: "Elephants Dream", sim: 0.7).isValidEditorialResonance == false)
+        #expect(ResonanceLink(workId: "wikidata:Q321607", domain: "tv", title: "Big Buck Bunny", sim: 0.7).isValidEditorialResonance == false)
+        #expect(ResonanceLink(workId: "wikidata:Q621917", domain: "tv", title: "wikidata:Q621917", sim: 0.7).isValidEditorialResonance == false)
+        #expect(ResonanceLink(workId: "wikidata:Q208592", domain: "tv", title: "Solaris", sim: 0.7).isValidEditorialResonance == true)
+
+        // 3. Container-move reconciliation adopts files in cacheRoot/books and heals stale local_path
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reconcile-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+        let booksDir = tmpDir.appendingPathComponent("books", isDirectory: true)
+        try FileManager.default.createDirectory(at: booksDir, withIntermediateDirectories: true)
+
+        let store = try ReaderStore(dbPath: tmpDir.appendingPathComponent("r.sqlite").path, cacheRoot: tmpDir)
+        let remoteBook = BookItem(
+            id: "md5-abc123",
+            title: "Real Home Book",
+            author: "Ian Author",
+            format: .epub,
+            source: .homeServer,
+            isOfflineCached: false,
+            localFilePath: "/old/container/uuid/md5-abc123.epub"
+        )
+        let showcaseItem = ShowcaseCatalog.works[0].toBookItem()
+        try await store.upsertBooks([showcaseItem, remoteBook])
+
+        let epubBytes = try SampleShowcaseEPUB.buildFrankensteinSampleData()
+        let actualCachedURL = booksDir.appendingPathComponent("md5-abc123.epub")
+        try epubBytes.write(to: actualCachedURL, options: .atomic)
+
+        let healed = try await store.reconcileOfflineCache()
+        #expect(healed >= 1)
+        let afterReconcile = try await store.listBooks()
+        let reconciledReal = try #require(afterReconcile.first(where: { $0.id == "md5-abc123" }))
+        #expect(reconciledReal.isOfflineCached == true)
+        let resolvedReconciledPath = URL(fileURLWithPath: reconciledReal.localFilePath ?? "").resolvingSymlinksInPath().path
+        let resolvedActualPath = actualCachedURL.resolvingSymlinksInPath().path
+        #expect(resolvedReconciledPath == resolvedActualPath)
+        #expect(reconciledReal.bytes == Int64(epubBytes.count))
+
+        // Showcase items are hidden and pruned once real library items exist
+        #expect(ReaderViewModel.visibleLibraryBooks(from: afterReconcile).contains(where: { $0.source == .showcase }) == false)
+        try await store.pruneShowcaseBooks()
+        #expect((try await store.listBooks()).contains(where: { $0.source == .showcase }) == false)
+
+        // 4. Durable AssetImageCache stores covers under cacheDir/covers/<safeId>.jpg and extracts EPUB cover
+        let imgCacheDir = tmpDir.appendingPathComponent("imgcache", isDirectory: true)
+        let imgCache = AssetImageCache(cacheDir: imgCacheDir)
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let ctx = try #require(CGContext(data: nil, width: 64, height: 96, bitsPerComponent: 8, bytesPerRow: 64 * 4, space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.setFillColor(red: 0.6, green: 0.2, blue: 0.15, alpha: 1.0)
+        ctx.fill(CGRect(x: 0, y: 0, width: 64, height: 96))
+        let cg = try #require(ctx.makeImage())
+        let pngBuf = try #require(CFDataCreateMutable(nil, 0))
+        let dest = try #require(CGImageDestinationCreateWithData(pngBuf, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(dest, cg, nil)
+        #expect(CGImageDestinationFinalize(dest))
+
+        await imgCache.registerLocalCover(data: pngBuf as Data, bookId: "md5-abc123")
+        #expect(imgCache.hasImage(forBookId: "md5-abc123") == true)
+        #expect(imgCache.hasDiskCover(forBookId: "md5-abc123") == true)
+        #expect(FileManager.default.fileExists(atPath: imgCacheDir.appendingPathComponent("covers/md5-abc123.jpg").path))
+
+        // 5. HomeLibraryClient.fetchSpace parses library works + server lenses
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockHomeURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let space = try await HomeLibraryClient.fetchSpace(baseURL: "https://mock.home.local", session: session)
+        #expect(space.works.count == 1)
+        #expect(space.works[0].title == "Seeing Like a State")
+        #expect(space.lenses.first?.name == "Reading Now")
+        #expect(space.slugByWorkId["isbn:9780300078152"] == "md5-scott")
+
+        // 6. Default budget & 350 -> 2048 migration + unlimited (0) persistence
+        let suiteName = "cohort-budget-test-\(UUID().uuidString)"
+        let testDefaults = UserDefaults(suiteName: suiteName)!
+        testDefaults.set(350, forKey: "cohortReader.autoDownloadBudgetMB")
+        let vmMigrated = ReaderViewModel(store: store, defaults: testDefaults, signatureStoreURL: tmpDir.appendingPathComponent("s.json"))
+        #expect(vmMigrated.autoDownloadBudgetMB == 2048)
+        vmMigrated.autoDownloadBudgetMB = 0
+        vmMigrated.savePreferences()
+        let vmUnlimited = ReaderViewModel(store: store, defaults: testDefaults, signatureStoreURL: tmpDir.appendingPathComponent("s.json"))
+        #expect(vmUnlimited.autoDownloadBudgetMB == 0)
+    }
 }
 
 private final class MockManifoldURLProtocol: URLProtocol, @unchecked Sendable {
@@ -1210,6 +1369,36 @@ private final class MockHomeURLProtocol: URLProtocol, @unchecked Sendable {
                 "createdAt": "2026-11-24T08:00:00Z"
               }],
               "deletedIds": ["hl-old"]
+            }
+            """.utf8)
+        } else if path == "/api/space" {
+            body = Data("""
+            {
+              "model": "all-MiniLM-L6-v2",
+              "count": 1,
+              "items": [{
+                "slug": "md5-scott",
+                "canonicalId": "isbn:9780300078152",
+                "title": "Seeing Like a State",
+                "creator": "James C. Scott",
+                "year": 1998,
+                "kind": "book · Nonfiction",
+                "format": "epub",
+                "shelves": ["Reading Now"],
+                "summary": "High modernism.",
+                "x": 0.25,
+                "y": -0.35,
+                "vec32": [1, 2, 3, 4],
+                "neighbours": []
+              }],
+              "lenses": [{
+                "id": "lens:library:reading-now",
+                "name": "Reading Now",
+                "summary": "Recent open books",
+                "issuerHandle": "home.library",
+                "anchors": [{"workId": "isbn:9780300078152", "weight": 1.0}],
+                "transitions": []
+              }]
             }
             """.utf8)
         } else if path == "/api/inbox" {

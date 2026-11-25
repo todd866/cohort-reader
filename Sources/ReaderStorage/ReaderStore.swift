@@ -609,6 +609,136 @@ public actor ReaderStore {
         return cacheRoot.appendingPathComponent("books", isDirectory: true).appendingPathComponent("\(safeId).\(ext)")
     }
 
+    public nonisolated func resolveOfflineFileURL(bookId: String, format: BookFormat, storedPath: String?) -> URL? {
+        let fm = FileManager.default
+        if let storedPath, !storedPath.isEmpty, fm.isReadableFile(atPath: storedPath) {
+            return URL(fileURLWithPath: storedPath)
+        }
+        let safeId = bookId.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "-")
+        let booksDir = cacheRoot.appendingPathComponent("books", isDirectory: true)
+        let preferredExt = (format == .epub) ? "epub" : "pdf"
+        let altExt = (preferredExt == "epub") ? "pdf" : "epub"
+        for ext in [preferredExt, altExt] {
+            let candidate = booksDir.appendingPathComponent("\(safeId).\(ext)")
+            if fm.isReadableFile(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    @discardableResult
+    public func reconcileOfflineCache() throws -> Int {
+        let fm = FileManager.default
+        let booksDir = cacheRoot.appendingPathComponent("books", isDirectory: true)
+        var diskBySafeId: [String: URL] = [:]
+        if let urls = try? fm.contentsOfDirectory(at: booksDir, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) {
+            for url in urls {
+                let ext = url.pathExtension.lowercased()
+                guard ext == "epub" || ext == "pdf" else { continue }
+                let stem = url.deletingPathExtension().lastPathComponent
+                if !stem.isEmpty {
+                    diskBySafeId[stem] = url
+                }
+            }
+        }
+
+        let sel = try prepare("SELECT id, format, is_offline, local_path, source FROM books;")
+        defer { sqlite3_finalize(sel) }
+        struct RowInfo {
+            var id: String
+            var isOffline: Bool
+            var localPath: String?
+            var source: String
+        }
+        var rows: [RowInfo] = []
+        while sqlite3_step(sel) == SQLITE_ROW {
+            rows.append(
+                RowInfo(
+                    id: columnText(sel, 0),
+                    isOffline: sqlite3_column_int(sel, 2) != 0,
+                    localPath: columnOptionalText(sel, 3),
+                    source: columnText(sel, 4)
+                )
+            )
+        }
+
+        var updatedCount = 0
+        try exec("BEGIN IMMEDIATE;")
+        do {
+            for r in rows {
+                let safeId = r.id.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "-")
+                let existingAtStored: URL? = {
+                    guard let lp = r.localPath, !lp.isEmpty, fm.isReadableFile(atPath: lp) else { return nil }
+                    return URL(fileURLWithPath: lp)
+                }()
+                let resolved = existingAtStored ?? diskBySafeId[safeId]
+                if let resolved {
+                    let size = Int64((try? resolved.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                    if !r.isOffline || r.localPath != resolved.path {
+                        var mutableURL = resolved
+                        var resVals = URLResourceValues()
+                        resVals.isExcludedFromBackup = true
+                        try? mutableURL.setResourceValues(resVals)
+                        let upd = try prepare("UPDATE books SET is_offline = 1, local_path = ?, bytes = CASE WHEN ? > 0 THEN ? ELSE bytes END WHERE id = ?;")
+                        defer { sqlite3_finalize(upd) }
+                        bindText(upd, 1, resolved.path)
+                        sqlite3_bind_int64(upd, 2, size)
+                        sqlite3_bind_int64(upd, 3, size)
+                        bindText(upd, 4, r.id)
+                        try stepDone(upd)
+                        updatedCount += 1
+                    }
+                } else if r.isOffline && r.source != BookSource.localImport.rawValue {
+                    let upd = try prepare("UPDATE books SET is_offline = 0, local_path = NULL WHERE id = ?;")
+                    defer { sqlite3_finalize(upd) }
+                    bindText(upd, 1, r.id)
+                    try stepDone(upd)
+                    updatedCount += 1
+                }
+            }
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
+        return updatedCount
+    }
+
+    public func pruneShowcaseBooks() throws {
+        try exec("BEGIN IMMEDIATE;")
+        do {
+            let sel = try prepare("SELECT id, local_path FROM books WHERE source = ?;")
+            defer { sqlite3_finalize(sel) }
+            bindText(sel, 1, BookSource.showcase.rawValue)
+            var stalePaths: [String] = []
+            var staleIds: [String] = []
+            while sqlite3_step(sel) == SQLITE_ROW {
+                staleIds.append(columnText(sel, 0))
+                if let p = columnOptionalText(sel, 1), !p.isEmpty {
+                    stalePaths.append(p)
+                }
+            }
+            for p in stalePaths where FileManager.default.fileExists(atPath: p) {
+                try? FileManager.default.removeItem(atPath: p)
+            }
+            for sid in staleIds {
+                let delFts = try prepare("DELETE FROM books_fts WHERE book_id = ?;")
+                defer { sqlite3_finalize(delFts) }
+                bindText(delFts, 1, sid)
+                try stepDone(delFts)
+            }
+            let del = try prepare("DELETE FROM books WHERE source = ?;")
+            defer { sqlite3_finalize(del) }
+            bindText(del, 1, BookSource.showcase.rawValue)
+            try stepDone(del)
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
+    }
+
     public func storeOfflineBookData(_ data: Data, bookId: String, format: BookFormat) throws -> URL {
         let dest = cachedFileURL(bookId: bookId, format: format)
         try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -818,21 +948,30 @@ public actor ReaderStore {
             )
         }
 
+        let bookId = columnText(stmt, 0)
+        let fmt = BookFormat(rawValue: columnText(stmt, 5)) ?? .epub
+        let src = BookSource(rawValue: columnText(stmt, 6)) ?? .showcase
+        let rawOffline = sqlite3_column_int(stmt, 12) != 0
+        let rawLocalPath = columnOptionalText(stmt, 13)
+        let resolvedURL = resolveOfflineFileURL(bookId: bookId, format: fmt, storedPath: rawLocalPath)
+        let finalLocalPath = resolvedURL?.path ?? rawLocalPath
+        let finalOffline = (resolvedURL != nil) || rawOffline
+
         return BookItem(
-            id: columnText(stmt, 0),
+            id: bookId,
             canonicalId: columnOptionalText(stmt, 1),
             title: columnText(stmt, 2),
             author: columnText(stmt, 3),
             year: sqlite3_column_type(stmt, 4) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 4)),
-            format: BookFormat(rawValue: columnText(stmt, 5)) ?? .epub,
-            source: BookSource(rawValue: columnText(stmt, 6)) ?? .showcase,
+            format: fmt,
+            source: src,
             genre: columnText(stmt, 7),
             subgenre: columnText(stmt, 8),
             summary: columnText(stmt, 9),
             shelfNames: shelves,
             bytes: sqlite3_column_int64(stmt, 11),
-            isOfflineCached: sqlite3_column_int(stmt, 12) != 0,
-            localFilePath: columnOptionalText(stmt, 13),
+            isOfflineCached: finalOffline,
+            localFilePath: finalLocalPath,
             openAccessURL: columnOptionalText(stmt, 14),
             epubURL: columnOptionalText(stmt, 15),
             hasServerCover: sqlite3_column_int(stmt, 16) != 0,
@@ -847,11 +986,11 @@ public actor ReaderStore {
 public enum CohortHandoff {
     public static func makeDraftURL(for draft: CohortCardDraft) -> URL? {
         var comps = URLComponents()
-        comps.scheme = "cohort"
+        comps.scheme = "cohort-study"
         comps.host = "draft"
         var items = [
             URLQueryItem(name: "source", value: draft.sourceTitle),
-            URLQueryItem(name: "quote", value: String(draft.quote.prefix(600))),
+            URLQueryItem(name: "quote", value: draft.quote),
             URLQueryItem(name: "prompt", value: draft.promptHint),
             URLQueryItem(name: "tags", value: draft.tags.joined(separator: ",")),
         ]

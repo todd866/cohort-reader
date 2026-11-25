@@ -354,7 +354,9 @@ public enum EPUBHTMLComposer {
               totalPages: totalCols,
               colsPerView: colsPerSpread
             });
-            emitProgress();
+            if (!instant || userInteracted) {
+              emitProgress();
+            }
             if (instant) {
               requestAnimationFrame(function() {
                 if (bookContent) bookContent.classList.remove('instant');

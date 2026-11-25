@@ -131,7 +131,7 @@ public enum ShowcaseCatalog {
             y: 0.2425,
             vec32: [7, 94, -17, -73, 54, 4, 39, 24, -4, 3, 44, -26, 27, 63, 2, -14, 10, 6, 6, 2, -13, -26, -18, 1, 25, -17, 3, 6, 1, 3, 23, -44],
             neighbours: [NeighbourScore(workId: "gutenberg:11", sim: 0.7133), NeighbourScore(workId: "gutenberg:55", sim: 0.7089), NeighbourScore(workId: "gutenberg:84", sim: 0.6971), NeighbourScore(workId: "gutenberg:1228", sim: 0.6797), NeighbourScore(workId: "gutenberg:35", sim: 0.6685), NeighbourScore(workId: "gutenberg:2701", sim: 0.6593)],
-            resonances: [ResonanceLink(workId: "wikidata:Q621917", domain: "tv", title: "Charade", sim: 0.6402), ResonanceLink(workId: "wikidata:Q321607", domain: "tv", title: "Big Buck Bunny", sim: 0.6168), ResonanceLink(workId: "wikidata:Q219400", domain: "tv", title: "Night of the Living Dead", sim: 0.6135)],
+            resonances: [ResonanceLink(workId: "wikidata:Q621917", domain: "tv", title: "Charade", sim: 0.6402), ResonanceLink(workId: "wikidata:Q219400", domain: "tv", title: "Night of the Living Dead", sim: 0.6135)],
             epubURL: "https://www.gutenberg.org/ebooks/1342.epub3.images",
             openAccessURL: "https://www.gutenberg.org/ebooks/1342"
         ),
@@ -167,7 +167,7 @@ public enum ShowcaseCatalog {
             y: 0.3594,
             vec32: [-9, 94, -32, -58, 64, -2, -1, -21, -10, 5, 11, 18, -24, -25, 21, -11, -14, -3, -13, 6, 24, 9, 40, -26, 26, 27, 5, 18, -21, 6, -16, -2],
             neighbours: [NeighbourScore(workId: "gutenberg:205", sim: 0.697), NeighbourScore(workId: "gutenberg:23", sim: 0.6937), NeighbourScore(workId: "gutenberg:35", sim: 0.6934), NeighbourScore(workId: "gutenberg:1228", sim: 0.6924), NeighbourScore(workId: "gutenberg:11", sim: 0.6852), NeighbourScore(workId: "gutenberg:1322", sim: 0.6843)],
-            resonances: [ResonanceLink(workId: "wikidata:Q151895", domain: "tv", title: "Nosferatu", sim: 0.6361), ResonanceLink(workId: "wikidata:Q674011", domain: "tv", title: "Elephants Dream", sim: 0.6319), ResonanceLink(workId: "wikidata:Q208592", domain: "tv", title: "Solaris", sim: 0.6316)],
+            resonances: [ResonanceLink(workId: "wikidata:Q151895", domain: "tv", title: "Nosferatu", sim: 0.6361), ResonanceLink(workId: "wikidata:Q208592", domain: "tv", title: "Solaris", sim: 0.6316)],
             epubURL: "https://www.gutenberg.org/ebooks/2701.epub3.images",
             openAccessURL: "https://www.gutenberg.org/ebooks/2701"
         ),
@@ -185,7 +185,7 @@ public enum ShowcaseCatalog {
             y: 0.5296,
             vec32: [-3, 102, -16, -60, 81, -23, -2, 26, 38, -20, 15, -13, 46, 11, -2, 13, 21, 23, 24, -21, -18, -33, 36, 23, 10, -4, 4, 1, -3, 6, 17, -16],
             neighbours: [NeighbourScore(workId: "gutenberg:55", sim: 0.7548), NeighbourScore(workId: "gutenberg:1661", sim: 0.7201), NeighbourScore(workId: "gutenberg:1342", sim: 0.7133), NeighbourScore(workId: "gutenberg:35", sim: 0.7073), NeighbourScore(workId: "gutenberg:1228", sim: 0.693), NeighbourScore(workId: "gutenberg:2701", sim: 0.6852)],
-            resonances: [ResonanceLink(workId: "wikidata:Q321607", domain: "tv", title: "Big Buck Bunny", sim: 0.6532), ResonanceLink(workId: "wikidata:Q674011", domain: "tv", title: "Elephants Dream", sim: 0.6513), ResonanceLink(workId: "wikidata:Q752509", domain: "tv", title: "Sintel", sim: 0.623)],
+            resonances: [],
             epubURL: "https://www.gutenberg.org/ebooks/11.epub3.images",
             openAccessURL: "https://www.gutenberg.org/ebooks/11"
         ),
@@ -221,7 +221,7 @@ public enum ShowcaseCatalog {
             y: 0.3252,
             vec32: [-6, 95, -43, -67, 64, -50, -10, -19, 8, 29, -7, 6, 2, 10, 28, -25, 41, 35, -30, -21, 15, 15, -25, 17, -10, 22, -3, 15, 58, 3, -14, -1],
             neighbours: [NeighbourScore(workId: "gutenberg:55", sim: 0.7082), NeighbourScore(workId: "gutenberg:11", sim: 0.7073), NeighbourScore(workId: "gutenberg:2701", sim: 0.6934), NeighbourScore(workId: "gutenberg:84", sim: 0.678), NeighbourScore(workId: "gutenberg:1228", sim: 0.6728), NeighbourScore(workId: "gutenberg:1342", sim: 0.6685)],
-            resonances: [ResonanceLink(workId: "wikidata:Q674011", domain: "tv", title: "Elephants Dream", sim: 0.6281), ResonanceLink(workId: "wikidata:Q500682", domain: "tv", title: "The Stranger", sim: 0.6276), ResonanceLink(workId: "wikidata:Q207626", domain: "tv", title: "Stalker", sim: 0.6191)],
+            resonances: [ResonanceLink(workId: "wikidata:Q500682", domain: "tv", title: "The Stranger", sim: 0.6276), ResonanceLink(workId: "wikidata:Q207626", domain: "tv", title: "Stalker", sim: 0.6191)],
             epubURL: "https://www.gutenberg.org/ebooks/35.epub3.images",
             openAccessURL: "https://www.gutenberg.org/ebooks/35"
         ),
@@ -329,7 +329,7 @@ public enum ShowcaseCatalog {
             y: 0.3721,
             vec32: [-6, 102, -52, -54, 56, -17, 2, 7, 25, -31, 21, 6, 43, 22, 5, -20, 35, 3, 25, -37, -23, -18, -27, 14, 4, -7, -1, 23, -1, -11, 5, -9],
             neighbours: [NeighbourScore(workId: "gutenberg:11", sim: 0.7548), NeighbourScore(workId: "gutenberg:1342", sim: 0.7089), NeighbourScore(workId: "gutenberg:35", sim: 0.7082), NeighbourScore(workId: "gutenberg:1661", sim: 0.7014), NeighbourScore(workId: "gutenberg:1228", sim: 0.6577), NeighbourScore(workId: "gutenberg:2701", sim: 0.6514)],
-            resonances: [ResonanceLink(workId: "wikidata:Q63090242", domain: "tv", title: "Spring", sim: 0.6781), ResonanceLink(workId: "wikidata:Q752509", domain: "tv", title: "Sintel", sim: 0.6419), ResonanceLink(workId: "wikidata:Q20856847", domain: "tv", title: "Cosmos Laundromat", sim: 0.6402)],
+            resonances: [],
             epubURL: "https://www.gutenberg.org/ebooks/55.epub3.images",
             openAccessURL: "https://www.gutenberg.org/ebooks/55"
         ),
@@ -347,7 +347,7 @@ public enum ShowcaseCatalog {
             y: 0.3705,
             vec32: [6, -4, 54, 48, 25, -1, 12, -4, 16, -27, -18, 0, 19, 5, -9, -24, -36, 54, -24, -29, -7, 49, 20, 15, 31, 17, 3, -15, 48, 7, 17, 53],
             neighbours: [NeighbourScore(workId: "doi:10.1038/nrn2787", sim: 0.6771), NeighbourScore(workId: "doi:10.1162/neco_a_00912", sim: 0.6743), NeighbourScore(workId: "isbn:9780300188370", sim: 0.6637), NeighbourScore(workId: "isbn:9780195019193", sim: 0.6595), NeighbourScore(workId: "doi:10.1093/scan/nsw154", sim: 0.6571), NeighbourScore(workId: "isbn:9780190217013", sim: 0.6543)],
-            resonances: [ResonanceLink(workId: "mbid:ab2c5006-d203-582c-9e3a-04d9726449b5", domain: "radio", title: "Koyaanisqatsi", sim: 0.6489), ResonanceLink(workId: "mbid:1b642322-7c90-4a8e-9b52-33f672941a64", domain: "radio", title: "1/1 (Music for Airports)", sim: 0.6424), ResonanceLink(workId: "wikidata:Q674011", domain: "tv", title: "Elephants Dream", sim: 0.6398)],
+            resonances: [ResonanceLink(workId: "mbid:ab2c5006-d203-582c-9e3a-04d9726449b5", domain: "radio", title: "Koyaanisqatsi", sim: 0.6489), ResonanceLink(workId: "mbid:1b642322-7c90-4a8e-9b52-33f672941a64", domain: "radio", title: "1/1 (Music for Airports)", sim: 0.6424)],
             epubURL: nil,
             openAccessURL: "https://arxiv.org/pdf/1706.03762"
         ),
@@ -383,7 +383,7 @@ public enum ShowcaseCatalog {
             y: 0.7186,
             vec32: [42, 22, 71, 74, 64, 7, 26, 4, -17, 20, -6, -27, 2, -6, 6, -12, 18, -2, 29, 14, -13, 1, 16, -43, -2, -3, -30, -2, 9, 5, -3, -1],
             neighbours: [NeighbourScore(workId: "isbn:9780691226231", sim: 0.8106), NeighbourScore(workId: "doi:10.1093/scan/nsw154", sim: 0.8013), NeighbourScore(workId: "doi:10.1038/nrn2787", sim: 0.7913), NeighbourScore(workId: "doi:10.1007/s00429-012-0475-5", sim: 0.7795), NeighbourScore(workId: "isbn:9780190217013", sim: 0.7454), NeighbourScore(workId: "doi:10.1136/jnnp.60.2.147", sim: 0.7124)],
-            resonances: [ResonanceLink(workId: "cohort:psych-classical-conditioning:v1", domain: "cohort", title: "Psych: classical conditioning", sim: 0.6969), ResonanceLink(workId: "wikidata:Q674011", domain: "tv", title: "Elephants Dream", sim: 0.656), ResonanceLink(workId: "cohort:genetics-autosomal-recessive-risk:v1", domain: "cohort", title: "Genetics: autosomal recessive inheritance", sim: 0.6559)],
+            resonances: [ResonanceLink(workId: "cohort:psych-classical-conditioning:v1", domain: "cohort", title: "Psych: classical conditioning", sim: 0.6969), ResonanceLink(workId: "cohort:genetics-autosomal-recessive-risk:v1", domain: "cohort", title: "Genetics: autosomal recessive inheritance", sim: 0.6559)],
             epubURL: nil,
             openAccessURL: "https://direct.mit.edu/neco/article/29/1/1/8207"
         ),
@@ -491,7 +491,7 @@ public enum ShowcaseCatalog {
             y: -0.0896,
             vec32: [20, 38, 55, 12, -28, -5, -36, 39, -9, -42, 8, -54, -23, 27, -38, 24, 45, -35, 9, 20, -9, 7, 13, -26, 27, 6, 36, 43, -9, -31, -1, 21],
             neighbours: [NeighbourScore(workId: "isbn:9780691004129", sim: 0.6931), NeighbourScore(workId: "isbn:9780961825171", sim: 0.6901), NeighbourScore(workId: "doi:10.1093/scan/nsw154", sim: 0.6742), NeighbourScore(workId: "isbn:9780465026562", sim: 0.6723), NeighbourScore(workId: "isbn:9780891418009", sim: 0.6642), NeighbourScore(workId: "pmid:32483848", sim: 0.6572)],
-            resonances: [ResonanceLink(workId: "cohort:biochem-allosteric-inhibition:v1", domain: "cohort", title: "Biochem: allosteric regulation", sim: 0.6343), ResonanceLink(workId: "wikidata:Q674011", domain: "tv", title: "Elephants Dream", sim: 0.6333), ResonanceLink(workId: "wikidata:Q1161826", domain: "tv", title: "D.O.A.", sim: 0.6315)],
+            resonances: [ResonanceLink(workId: "cohort:biochem-allosteric-inhibition:v1", domain: "cohort", title: "Biochem: allosteric regulation", sim: 0.6343), ResonanceLink(workId: "wikidata:Q1161826", domain: "tv", title: "D.O.A.", sim: 0.6315)],
             epubURL: nil,
             openAccessURL: nil
         ),
@@ -581,7 +581,7 @@ public enum ShowcaseCatalog {
             y: -0.5896,
             vec32: [13, 63, 45, -54, -29, -11, 32, 0, -18, 4, -8, 3, 23, -52, 92, 3, 38, -9, -2, -1, 37, -19, -58, -2, -26, -6, -27, 22, 23, 16, -9, -5],
             neighbours: [NeighbourScore(workId: "isbn:9780374157357", sim: 0.6946), NeighbourScore(workId: "isbn:9780691165028", sim: 0.6777), NeighbourScore(workId: "isbn:9780691130347", sim: 0.6644), NeighbourScore(workId: "isbn:9780300182910", sim: 0.6562), NeighbourScore(workId: "isbn:9780691166858", sim: 0.6392), NeighbourScore(workId: "isbn:9780691140520", sim: 0.6365)],
-            resonances: [ResonanceLink(workId: "cohort:psych-classical-conditioning:v1", domain: "cohort", title: "Psych: classical conditioning", sim: 0.5947), ResonanceLink(workId: "wikidata:Q1141485", domain: "tv", title: "My Man Godfrey", sim: 0.5941), ResonanceLink(workId: "wikidata:Q752509", domain: "tv", title: "Sintel", sim: 0.5913)],
+            resonances: [ResonanceLink(workId: "cohort:psych-classical-conditioning:v1", domain: "cohort", title: "Psych: classical conditioning", sim: 0.5947), ResonanceLink(workId: "wikidata:Q1141485", domain: "tv", title: "My Man Godfrey", sim: 0.5941)],
             epubURL: nil,
             openAccessURL: nil
         ),
@@ -851,7 +851,7 @@ public enum ShowcaseCatalog {
             y: 0.0378,
             vec32: [-1, 42, 56, 13, 7, -28, -23, 14, 64, 4, -59, -19, 20, 4, -17, 1, 8, 5, -48, -12, 6, 10, -51, -38, 11, 15, -24, -23, 9, -20, -7, 16],
             neighbours: [NeighbourScore(workId: "doi:10.1162/neco_a_00912", sim: 0.6568), NeighbourScore(workId: "isbn:9780961825171", sim: 0.6565), NeighbourScore(workId: "isbn:9780465026562", sim: 0.6531), NeighbourScore(workId: "isbn:9781101870907", sim: 0.653), NeighbourScore(workId: "isbn:9780961392147", sim: 0.6446), NeighbourScore(workId: "isbn:9781603580557", sim: 0.6424)],
-            resonances: [ResonanceLink(workId: "mbid:912241ed-7bf9-5ab4-af62-b2eede1437ba", domain: "radio", title: "Chameleon", sim: 0.652), ResonanceLink(workId: "wikidata:Q674011", domain: "tv", title: "Elephants Dream", sim: 0.6444), ResonanceLink(workId: "mbid:84031205-6043-4814-e634-113241506934", domain: "radio", title: "Avril 14th", sim: 0.642)],
+            resonances: [ResonanceLink(workId: "mbid:912241ed-7bf9-5ab4-af62-b2eede1437ba", domain: "radio", title: "Chameleon", sim: 0.652), ResonanceLink(workId: "mbid:84031205-6043-4814-e634-113241506934", domain: "radio", title: "Avril 14th", sim: 0.642)],
             epubURL: nil,
             openAccessURL: nil
         ),
@@ -869,7 +869,7 @@ public enum ShowcaseCatalog {
             y: -0.2548,
             vec32: [30, 59, 71, -20, -16, -21, 9, -7, 6, -29, -39, -41, -37, 12, -44, 14, 36, -36, -24, -4, 0, 15, -7, -4, -9, -1, 58, -16, -2, 11, 1, -12],
             neighbours: [NeighbourScore(workId: "isbn:9780465026562", sim: 0.7062), NeighbourScore(workId: "isbn:9781603580557", sim: 0.6931), NeighbourScore(workId: "isbn:9780754615903", sim: 0.6901), NeighbourScore(workId: "isbn:9780691004129", sim: 0.6899), NeighbourScore(workId: "isbn:9781101870907", sim: 0.6858), NeighbourScore(workId: "isbn:9780691166858", sim: 0.6681)],
-            resonances: [ResonanceLink(workId: "mbid:912241ed-7bf9-5ab4-af62-b2eede1437ba", domain: "radio", title: "Chameleon", sim: 0.6433), ResonanceLink(workId: "wikidata:Q207626", domain: "tv", title: "Stalker", sim: 0.609), ResonanceLink(workId: "wikidata:Q674011", domain: "tv", title: "Elephants Dream", sim: 0.6008)],
+            resonances: [ResonanceLink(workId: "mbid:912241ed-7bf9-5ab4-af62-b2eede1437ba", domain: "radio", title: "Chameleon", sim: 0.6433), ResonanceLink(workId: "wikidata:Q207626", domain: "tv", title: "Stalker", sim: 0.609)],
             epubURL: nil,
             openAccessURL: nil
         ),
@@ -1031,7 +1031,7 @@ public enum ShowcaseCatalog {
             y: 0.1633,
             vec32: [-18, 51, 16, 40, 15, -51, -10, -34, 22, -33, 2, 22, -28, -7, -11, 10, -28, -19, 14, -7, 28, 7, 7, 3, -36, 16, 17, 20, 12, 41, -8, -46],
             neighbours: [NeighbourScore(workId: "isbn:9780465026562", sim: 0.715), NeighbourScore(workId: "isbn:9781524742874", sim: 0.7027), NeighbourScore(workId: "isbn:9780691121178", sim: 0.6847), NeighbourScore(workId: "isbn:9780691226231", sim: 0.6752), NeighbourScore(workId: "isbn:9780593133231", sim: 0.6673), NeighbourScore(workId: "isbn:9781635575637", sim: 0.6606)],
-            resonances: [ResonanceLink(workId: "wikidata:Q208592", domain: "tv", title: "Solaris", sim: 0.697), ResonanceLink(workId: "wikidata:Q20856847", domain: "tv", title: "Cosmos Laundromat", sim: 0.696), ResonanceLink(workId: "wikidata:Q63090242", domain: "tv", title: "Spring", sim: 0.6899)],
+            resonances: [ResonanceLink(workId: "wikidata:Q208592", domain: "tv", title: "Solaris", sim: 0.697)],
             epubURL: nil,
             openAccessURL: nil
         ),
@@ -1049,7 +1049,7 @@ public enum ShowcaseCatalog {
             y: -0.2705,
             vec32: [-3, 82, -8, -4, -22, 2, -34, -35, 31, 28, 1, -29, -38, 15, 5, 25, -19, 6, -69, 37, -43, 15, 15, 19, -75, -5, 1, 6, -10, -16, -34, 2],
             neighbours: [NeighbourScore(workId: "isbn:9780691121178", sim: 0.6699), NeighbourScore(workId: "isbn:9780553283686", sim: 0.6651), NeighbourScore(workId: "isbn:9780891418009", sim: 0.657), NeighbourScore(workId: "isbn:9781101947883", sim: 0.6514), NeighbourScore(workId: "isbn:9781635575637", sim: 0.6476), NeighbourScore(workId: "isbn:9780316005401", sim: 0.6427)],
-            resonances: [ResonanceLink(workId: "wikidata:Q1202626", domain: "tv", title: "Tears of Steel", sim: 0.6511), ResonanceLink(workId: "wikidata:Q207626", domain: "tv", title: "Stalker", sim: 0.6447), ResonanceLink(workId: "wikidata:Q208592", domain: "tv", title: "Solaris", sim: 0.6447)],
+            resonances: [ResonanceLink(workId: "wikidata:Q207626", domain: "tv", title: "Stalker", sim: 0.6447), ResonanceLink(workId: "wikidata:Q208592", domain: "tv", title: "Solaris", sim: 0.6447)],
             epubURL: nil,
             openAccessURL: nil
         ),
@@ -1067,7 +1067,7 @@ public enum ShowcaseCatalog {
             y: 0.2456,
             vec32: [-22, 59, -8, 49, 19, 9, -2, -24, -5, 4, 32, -21, -43, 14, 20, 1, -31, 56, 45, 29, 6, -33, 22, -33, -14, 1, 39, -21, 29, -21, 29, 20],
             neighbours: [NeighbourScore(workId: "isbn:9780195019193", sim: 0.6955), NeighbourScore(workId: "isbn:9780190217013", sim: 0.6703), NeighbourScore(workId: "isbn:9780316005401", sim: 0.6611), NeighbourScore(workId: "isbn:9781101947883", sim: 0.6606), NeighbourScore(workId: "doi:10.1162/neco_a_00912", sim: 0.6541), NeighbourScore(workId: "isbn:9780671540661", sim: 0.6476)],
-            resonances: [ResonanceLink(workId: "wikidata:Q674011", domain: "tv", title: "Elephants Dream", sim: 0.7047), ResonanceLink(workId: "wikidata:Q621917", domain: "tv", title: "Charade", sim: 0.6904), ResonanceLink(workId: "wikidata:Q207626", domain: "tv", title: "Stalker", sim: 0.6862)],
+            resonances: [ResonanceLink(workId: "wikidata:Q621917", domain: "tv", title: "Charade", sim: 0.6904), ResonanceLink(workId: "wikidata:Q207626", domain: "tv", title: "Stalker", sim: 0.6862)],
             epubURL: nil,
             openAccessURL: nil
         ),
@@ -1085,7 +1085,7 @@ public enum ShowcaseCatalog {
             y: -0.3499,
             vec32: [-12, 53, -25, 6, -48, -61, -12, -15, 41, 43, 14, 3, 1, 8, 54, 36, -23, 0, -16, -6, -10, 21, 23, -37, -30, -31, 2, 3, 45, -31, 31, -16],
             neighbours: [NeighbourScore(workId: "isbn:9780735224384", sim: 0.7017), NeighbourScore(workId: "isbn:9780671540661", sim: 0.6651), NeighbourScore(workId: "isbn:9780374157357", sim: 0.6504), NeighbourScore(workId: "isbn:9780316005401", sim: 0.6425), NeighbourScore(workId: "isbn:9781635575637", sim: 0.6413), NeighbourScore(workId: "isbn:9780891418009", sim: 0.6384)],
-            resonances: [ResonanceLink(workId: "wikidata:Q1202626", domain: "tv", title: "Tears of Steel", sim: 0.6812), ResonanceLink(workId: "wikidata:Q776670", domain: "tv", title: "Plan 9 from Outer Space", sim: 0.6736), ResonanceLink(workId: "wikidata:Q206463", domain: "tv", title: "A Trip to the Moon", sim: 0.6492)],
+            resonances: [ResonanceLink(workId: "wikidata:Q776670", domain: "tv", title: "Plan 9 from Outer Space", sim: 0.6736), ResonanceLink(workId: "wikidata:Q206463", domain: "tv", title: "A Trip to the Moon", sim: 0.6492)],
             epubURL: nil,
             openAccessURL: nil
         ),
@@ -1103,7 +1103,7 @@ public enum ShowcaseCatalog {
             y: -0.229,
             vec32: [-14, 60, -2, 7, -28, 27, 2, -53, -8, 20, -26, -9, -9, 37, 75, -20, 1, 64, 23, 34, -10, 23, 37, -15, -3, -20, 11, 40, -4, 2, -15, -34],
             neighbours: [NeighbourScore(workId: "isbn:9780735224384", sim: 0.6736), NeighbourScore(workId: "isbn:9780300188370", sim: 0.6614), NeighbourScore(workId: "isbn:9781635575637", sim: 0.6611), NeighbourScore(workId: "isbn:9780671540661", sim: 0.6427), NeighbourScore(workId: "isbn:9780553283686", sim: 0.6425), NeighbourScore(workId: "isbn:9780394720241", sim: 0.6336)],
-            resonances: [ResonanceLink(workId: "wikidata:Q208592", domain: "tv", title: "Solaris", sim: 0.6473), ResonanceLink(workId: "wikidata:Q500682", domain: "tv", title: "The Stranger", sim: 0.639), ResonanceLink(workId: "wikidata:Q20856847", domain: "tv", title: "Cosmos Laundromat", sim: 0.6367)],
+            resonances: [ResonanceLink(workId: "wikidata:Q208592", domain: "tv", title: "Solaris", sim: 0.6473), ResonanceLink(workId: "wikidata:Q500682", domain: "tv", title: "The Stranger", sim: 0.639)],
             epubURL: nil,
             openAccessURL: nil
         ),

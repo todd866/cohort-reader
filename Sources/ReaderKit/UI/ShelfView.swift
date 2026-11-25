@@ -8,7 +8,10 @@ public struct ShelfView: View {
     public var onImportTap: () -> Void
 
     private var filterOptions: [String] {
-        var list = ["All", "Reading", "Offline", "For You"]
+        var list = ["All", "Reading", "Offline"]
+        if !vm.hasRealLibrary {
+            list.append("For You")
+        }
         if !vm.wishlistIds.isEmpty {
             list.append("Saved")
         }
@@ -213,7 +216,7 @@ public struct ShelfView: View {
         let items = vm.filteredShelfBooks
         let hero = vm.activeShelfFilter == "All" ? vm.continueReadingBook : nil
         let gridItems = hero == nil ? items : items.filter { $0.id != hero?.id }
-        let discovery = Array(vm.recommendedDiscoveryWorks.prefix(8))
+        let discovery = vm.hasRealLibrary ? [] : Array(vm.recommendedDiscoveryWorks.prefix(8))
         let w = cardWidth(for: totalWidth, colCount: colCount)
         let splitCount = totalWidth > 700 ? colCount : colCount * 2
         let hasEarlyDiscovery = vm.activeShelfFilter == "All" && !discovery.isEmpty && !vm.shelfUsesListLayout
@@ -650,6 +653,13 @@ private struct BookGridCard: View {
                             .font(.system(size: 12))
                             .foregroundStyle(ReaderPalette.cohortGreen)
                             .background(Circle().fill(ReaderPalette.elevated))
+                            .padding(5)
+                    } else if book.source == .homeServer {
+                        Image(systemName: "icloud.and.arrow.down")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(ReaderPalette.secondary)
+                            .padding(4)
+                            .background(Circle().fill(ReaderPalette.elevated.opacity(0.9)))
                             .padding(5)
                     }
                 }

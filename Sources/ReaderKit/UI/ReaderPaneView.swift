@@ -661,7 +661,12 @@ public struct ReaderPaneView: View {
                                     .foregroundStyle(ReaderPalette.accent)
                             }
                             HStack(spacing: 10) {
-                                if book.epubURL != nil || book.openAccessURL != nil || book.source == .homeServer {
+                                let hasDirectFile: Bool = book.source == .homeServer
+                                    || book.epubURL != nil
+                                    || (book.canonicalId.map { $0.hasPrefix("gutenberg:") || $0.hasPrefix("arxiv:") } ?? false)
+                                    || (book.openAccessURL?.lowercased().hasSuffix(".pdf") == true)
+                                    || (book.openAccessURL?.lowercased().hasSuffix(".epub") == true)
+                                if hasDirectFile {
                                     Button {
                                         Task { await vm.openBook(book) }
                                     } label: {
@@ -673,6 +678,15 @@ public struct ReaderPaneView: View {
                                             .foregroundStyle(.white)
                                     }
                                     .buttonStyle(.plain)
+                                } else if let rawOA = book.openAccessURL, let oaURL = URL(string: rawOA) {
+                                    Link(destination: oaURL) {
+                                        Label("Open web edition", systemImage: "arrow.up.right")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .padding(.horizontal, 14)
+                                            .padding(.vertical, 8)
+                                            .background(ReaderPalette.accent, in: RoundedRectangle(cornerRadius: 7))
+                                            .foregroundStyle(.white)
+                                    }
                                 }
                                 Button {
                                     vm.selectedTab = .shelf
@@ -3675,11 +3689,15 @@ struct CohortDraftSheet: View {
                     .lineLimit(2...4)
 
                 Button {
+                    guard !vm.isSendingCohortDraft else { return }
+                    vm.isSendingCohortDraft = true
                     Task {
-                        if let url = await vm.sendDraftToCohort(draft, note: vm.cohortDraftNote) {
-                            openURL(url)
+                        await vm.sendDraftToCohort(draft, note: vm.cohortDraftNote) { url in
+                            await withCheckedContinuation { continuation in
+                                openURL(url) { accepted in continuation.resume(returning: accepted) }
+                            }
                         }
-                        dismiss()
+                        vm.isSendingCohortDraft = false
                     }
                 } label: {
                     Text("Send Seed to Cohort")
@@ -3690,6 +3708,7 @@ struct CohortDraftSheet: View {
                         .foregroundStyle(.white)
                 }
                 .buttonStyle(.plain)
+                .disabled(vm.isSendingCohortDraft)
 
                 Spacer()
             }

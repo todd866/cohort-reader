@@ -167,9 +167,13 @@ public final class ReaderViewModel {
     public var serverStatusMessage: String = "Offline"
     public var pendingOutboxCount: Int = 0
     public var autoDownloadEnabled: Bool = true
-    public var autoDownloadBudgetMB: Int = 350
+    public var autoDownloadBudgetMB: Int = 2048
     public var autoDownloadActiveTitle: String?
     public var autoDownloadedCount: Int = 0
+
+    public var hasRealLibrary: Bool {
+        books.contains { $0.source == .homeServer || $0.source == .localImport }
+    }
 
     // Active Reader Session & Multi-Document Tabs
     public var openTabs: [OpenReaderTab] = []
@@ -198,6 +202,7 @@ public final class ReaderViewModel {
     public var activeHighlights: [ReadingHighlight] = []
     public var activeSelectionText: String = ""
     public var cohortDraftNote: String = ""
+    public var isSendingCohortDraft: Bool = false
     public var isImporterPresented: Bool = false
     public var lastHandoffMessage: String?
 
@@ -281,6 +286,7 @@ public final class ReaderViewModel {
 
     private var readingStartAt: Date = Date()
     private var autoDownloadTask: Task<Void, Never>?
+    private var prefetchScheduleTask: Task<Void, Never>?
     private var openBookTask: Task<Void, Never>?
     private var pdfSearchTask: Task<Void, Never>?
     private var pdfScrollProgressTask: Task<Void, Never>?
@@ -291,6 +297,10 @@ public final class ReaderViewModel {
     private var didOpenExternalFileAtLaunch: Bool = false
     private var quickOpenScopedURLs: [String: URL] = [:]
     private var localMirrorScopedURL: URL?
+    private var cachedChapterKey: String = ""
+    private var cachedChapterValue: EPUBChapter?
+    private var cachedChapterHTMLKey: String = ""
+    private var cachedChapterHTMLValue: String = ""
 
     public init(store: ReaderStore, defaults: UserDefaults = .standard, signatureStoreURL: URL? = SignatureStore.defaultURL()) {
         self.store = store
@@ -306,9 +316,21 @@ public final class ReaderViewModel {
         if defaults.object(forKey: "cohortReader.autoDownloadEnabled") != nil {
             self.autoDownloadEnabled = defaults.bool(forKey: "cohortReader.autoDownloadEnabled")
         }
-        let savedBudget = defaults.integer(forKey: "cohortReader.autoDownloadBudgetMB")
-        if savedBudget > 0 {
-            self.autoDownloadBudgetMB = savedBudget
+        if defaults.object(forKey: "cohortReader.autoDownloadBudgetMB") != nil {
+            let savedBudget = defaults.integer(forKey: "cohortReader.autoDownloadBudgetMB")
+            if !defaults.bool(forKey: "cohortReader.budgetMigratedV2") {
+                defaults.set(true, forKey: "cohortReader.budgetMigratedV2")
+                if savedBudget == 350 {
+                    self.autoDownloadBudgetMB = 2048
+                    defaults.set(2048, forKey: "cohortReader.autoDownloadBudgetMB")
+                } else if savedBudget >= 0 {
+                    self.autoDownloadBudgetMB = savedBudget
+                }
+            } else if savedBudget >= 0 {
+                self.autoDownloadBudgetMB = savedBudget
+            }
+        } else {
+            defaults.set(true, forKey: "cohortReader.budgetMigratedV2")
         }
         self.shelfUsesListLayout = defaults.bool(forKey: "cohortReader.shelfUsesListLayout")
         if let rawSort = defaults.string(forKey: "cohortReader.shelfSortOrder"),
@@ -374,10 +396,16 @@ public final class ReaderViewModel {
         self.allowBackgroundSync = runNetworkSync
         do {
             wishlistIds = (try? await store.listWishlistIds()) ?? []
+            _ = try? await store.reconcileOfflineCache()
             var current = try await store.listBooks()
+            if current.contains(where: { $0.source == .homeServer || $0.source == .localImport }),
+               current.contains(where: { $0.source == .showcase }) {
+                try? await store.pruneShowcaseBooks()
+                current = try await store.listBooks()
+            }
             if current.isEmpty {
                 let openSeedItems = ShowcaseCatalog.works
-                    .filter { $0.epubURL != nil || $0.openAccessURL != nil }
+                    .filter(\.isDirectlyDownloadable)
                     .map { $0.toBookItem() }
                 try await store.upsertBooks(openSeedItems)
 
@@ -400,7 +428,7 @@ public final class ReaderViewModel {
                 current = try await store.listBooks()
             }
 
-            books = visibleLibraryBooks(from: current)
+            books = Self.visibleLibraryBooks(from: current)
             rebuildShelves()
             offlineBytes = await store.cachedBookBytes()
             pendingOutboxCount = (try? await store.pendingSyncEvents().count) ?? 0
@@ -416,15 +444,21 @@ public final class ReaderViewModel {
 
             if runNetworkSync && !serverURL.isEmpty && !isServerConnected {
                 await syncServerCatalog(silent: true)
+            } else if runNetworkSync {
+                Task { await self.ensureLocalCoversForCachedBooks() }
             }
         } catch {
             bannerError = error.localizedDescription
         }
     }
 
-    private func visibleLibraryBooks(from raw: [BookItem]) -> [BookItem] {
-        raw.filter { book in
-            if book.source == .showcase && !book.isOfflineCached && book.epubURL == nil && book.openAccessURL == nil {
+    public static func visibleLibraryBooks(from raw: [BookItem]) -> [BookItem] {
+        let hasReal = raw.contains { $0.source == .homeServer || $0.source == .localImport }
+        if hasReal {
+            return raw.filter { $0.source != .showcase }
+        }
+        return raw.filter { book in
+            if book.source == .showcase && !book.isOfflineCached && book.epubURL == nil && !(book.canonicalId?.hasPrefix("arxiv:") ?? false) {
                 return false
             }
             return true
@@ -573,12 +607,18 @@ public final class ReaderViewModel {
     }
 
     public func downloadDiscoveryWork(_ work: ManifoldReaderWork) async {
+        guard let dlURL = work.directDownloadURL else {
+            bannerError = "This title has no direct offline download — open the web edition or import your own copy."
+            return
+        }
         var book = work.toBookItem()
-        if book.openAccessURL == nil, let oa = OpenAccessResolver.directDownloadURL(for: work.workId) {
-            book.epubURL = oa.absoluteString
+        if book.format == .epub {
+            book.epubURL = dlURL.absoluteString
+        } else {
+            book.openAccessURL = dlURL.absoluteString
         }
         try? await store.upsertBooks([book])
-        books = visibleLibraryBooks(from: (try? await store.listBooks()) ?? books)
+        books = Self.visibleLibraryBooks(from: (try? await store.listBooks()) ?? books)
         await downloadForOffline(book, forceImmediate: true)
         if let updated = books.first(where: { $0.id == book.id }), updated.isOfflineCached {
             activeSheet = nil
@@ -586,9 +626,18 @@ public final class ReaderViewModel {
         }
     }
 
+    public nonisolated static func isValidPayload(_ data: Data, format: BookFormat) -> Bool {
+        guard !data.isEmpty else { return false }
+        if format == .epub {
+            return data.starts(with: [0x50, 0x4B])
+        } else {
+            return data.starts(with: [0x25, 0x50, 0x44, 0x46])
+        }
+    }
+
     public static func prioritizedAutoDownloadCandidates(
         from items: [BookItem],
-        maxSingleBytes: Int64 = 35 * 1024 * 1024
+        maxSingleBytes: Int64 = 60 * 1024 * 1024
     ) -> [BookItem] {
         let eligible = items.filter { book in
             guard book.source == .homeServer, !book.isOfflineCached else { return false }
@@ -600,7 +649,8 @@ public final class ReaderViewModel {
             if book.isInProgress { pts += 1000 }
             if book.notesVersion != nil { pts += 500 }
             if book.shelfNames.contains(where: { $0.caseInsensitiveCompare("Reading") == .orderedSame }) { pts += 300 }
-            pts += (book.format == .epub ? 150 : 40)
+            if book.shelfNames.contains(where: { $0.caseInsensitiveCompare("Reading Now") == .orderedSame }) { pts += 300 }
+            pts += (book.format == .epub ? 150 : 60)
             if !book.shelfNames.isEmpty { pts += 80 }
             return pts
         }
@@ -624,41 +674,211 @@ public final class ReaderViewModel {
         }
     }
 
-    public func prefetchLikelyReads() async {
+    public func scheduleBackgroundPrefetch(delaySeconds: Double = 1.5) {
         guard allowBackgroundSync, autoDownloadEnabled, isServerConnected, !serverURL.isEmpty else { return }
-        let budgetBytes = Int64(max(50, autoDownloadBudgetMB)) * 1024 * 1024
+        prefetchScheduleTask?.cancel()
+        prefetchScheduleTask = Task { @MainActor [weak self] in
+            if delaySeconds > 0 {
+                try? await Task.sleep(for: .seconds(delaySeconds))
+            }
+            guard !Task.isCancelled, let self, self.autoDownloadEnabled, self.isServerConnected else { return }
+            self.autoDownloadTask?.cancel()
+            self.autoDownloadTask = Task { await self.prefetchLikelyReads() }
+        }
+    }
+
+    public func ensureLocalCoversForCachedBooks() async {
+        let cached = books.filter { $0.isOfflineCached }
+        for book in cached {
+            if Task.isCancelled { break }
+            guard !AssetImageCache.shared.hasDiskCover(forBookId: book.id),
+                  let path = book.localFilePath,
+                  FileManager.default.isReadableFile(atPath: path) else { continue }
+            await AssetImageCache.shared.extractLocalCoverIfMissing(
+                bookId: book.id,
+                fileURL: URL(fileURLWithPath: path),
+                format: book.format
+            )
+        }
+    }
+
+    private func cacheMarginNotesAndAssets(for book: BookItem) async {
+        guard isServerConnected, !serverURL.isEmpty, book.source == .homeServer, book.notesVersion != nil else { return }
+        var notes = (try? await store.loadMarginNotes(bookId: book.id)) ?? []
+        if notes.isEmpty {
+            notes = (try? await HomeLibraryClient.fetchMarginNotes(baseURL: serverURL, bookId: book.id)) ?? []
+            if !notes.isEmpty {
+                try? await store.saveMarginNotes(bookId: book.id, notes: notes)
+                if activeBook?.id == book.id {
+                    activeNotes = notes
+                }
+            }
+        }
+        for note in notes {
+            guard let asset = note.image, !asset.isEmpty,
+                  let assetURL = HomeLibraryClient.noteAssetURL(baseURL: serverURL, bookId: book.id, asset: asset) else { continue }
+            await AssetImageCache.shared.prefetchNoteAsset(url: assetURL, bookId: book.id, asset: asset)
+        }
+    }
+
+    public func prefetchLikelyReads() async {
+        guard allowBackgroundSync, isServerConnected, !serverURL.isEmpty else { return }
+        let baseURL = serverURL
+
+        // Phase A: Ensure every catalog cover is persistently cached on disk (max 4 concurrent).
+        let coverJobs: [(book: BookItem, url: URL)] = books.compactMap { book in
+            guard book.hasServerCover,
+                  !AssetImageCache.shared.hasDiskCover(forBookId: book.id),
+                  let url = HomeLibraryClient.coverURL(baseURL: baseURL, bookId: book.id) else {
+                return nil
+            }
+            return (book, url)
+        }
+        if !coverJobs.isEmpty {
+            var idx = 0
+            await withTaskGroup(of: Void.self) { group in
+                let width = min(4, coverJobs.count)
+                for _ in 0..<width {
+                    if idx < coverJobs.count {
+                        let job = coverJobs[idx]
+                        idx += 1
+                        group.addTask {
+                            _ = await AssetImageCache.shared.prefetchCover(url: job.url, bookId: job.book.id)
+                        }
+                    }
+                }
+                while await group.next() != nil {
+                    if Task.isCancelled || !isServerConnected { break }
+                    if idx < coverJobs.count {
+                        let job = coverJobs[idx]
+                        idx += 1
+                        group.addTask {
+                            _ = await AssetImageCache.shared.prefetchCover(url: job.url, bookId: job.book.id)
+                        }
+                    }
+                }
+            }
+        }
+        await ensureLocalCoversForCachedBooks()
+
+        // Phase B: Ensure margin notes + note images are cached for already-offline books.
+        for book in books where book.isOfflineCached && book.notesVersion != nil {
+            if Task.isCancelled || !isServerConnected { break }
+            await cacheMarginNotesAndAssets(for: book)
+        }
+
+        // Phase C: Download all eligible books/papers within budget (0 == Unlimited).
+        guard autoDownloadEnabled else { return }
+        let budgetBytes: Int64 = (autoDownloadBudgetMB <= 0)
+            ? Int64.max
+            : Int64(max(50, autoDownloadBudgetMB)) * 1024 * 1024
         var currentBytes = await store.cachedBookBytes()
         guard currentBytes < budgetBytes else { return }
 
-        let candidates = Self.prioritizedAutoDownloadCandidates(from: books).prefix(24)
-        for book in candidates {
-            if Task.isCancelled || !autoDownloadEnabled || !isServerConnected { break }
-            if currentBytes + book.bytes > budgetBytes && autoDownloadedCount >= 3 { break }
+        let allCandidates = Self.prioritizedAutoDownloadCandidates(from: books)
+        var queue: [BookItem] = []
+        var projectedBytes = currentBytes
+        for book in allCandidates {
+            if budgetBytes != Int64.max && projectedBytes + book.bytes > budgetBytes {
+                if autoDownloadedCount >= 3 || !queue.isEmpty { continue }
+            }
+            queue.append(book)
+            if budgetBytes != Int64.max {
+                projectedBytes += book.bytes
+            }
+        }
+        guard !queue.isEmpty else { return }
 
-            autoDownloadActiveTitle = book.title
-            defer { autoDownloadActiveTitle = nil }
-            do {
-                let data = try await HomeLibraryClient.downloadBook(baseURL: serverURL, bookId: book.id)
-                if book.notesVersion != nil {
-                    let notes = (try? await HomeLibraryClient.fetchMarginNotes(baseURL: serverURL, bookId: book.id)) ?? []
-                    if !notes.isEmpty {
-                        try? await store.saveMarginNotes(bookId: book.id, notes: notes)
+        var nextIdx = 0
+        var dirtySinceRefresh = 0
+        await withTaskGroup(of: (BookItem, Data, [MarginNote])?.self) { group in
+            let maxConcurrent = 2
+            autoDownloadActiveTitle = queue.first?.title
+            for _ in 0..<min(maxConcurrent, queue.count) {
+                guard nextIdx < queue.count, !Task.isCancelled, autoDownloadEnabled, isServerConnected else { break }
+                let book = queue[nextIdx]
+                nextIdx += 1
+                group.addTask {
+                    do {
+                        let data = try await HomeLibraryClient.downloadBook(baseURL: baseURL, bookId: book.id)
+                        guard Self.isValidPayload(data, format: book.format == .article ? .pdf : book.format) else {
+                            return nil
+                        }
+                        let notes: [MarginNote]
+                        if book.notesVersion != nil {
+                            notes = (try? await HomeLibraryClient.fetchMarginNotes(baseURL: baseURL, bookId: book.id)) ?? []
+                        } else {
+                            notes = []
+                        }
+                        return (book, data, notes)
+                    } catch {
+                        return nil
                     }
                 }
-                let url = try await store.storeOfflineBookData(data, bookId: book.id, format: book.format == .article ? .pdf : book.format)
-                var updated = book
-                updated.isOfflineCached = true
-                updated.localFilePath = url.path
-                updated.bytes = Int64(data.count)
-                try await store.upsertBooks([updated])
-                books = visibleLibraryBooks(from: try await store.listBooks())
-                rebuildShelves()
-                currentBytes = await store.cachedBookBytes()
-                offlineBytes = currentBytes
-                autoDownloadedCount += 1
-            } catch {
-                continue
             }
+
+            while let result = await group.next() {
+                if Task.isCancelled || !autoDownloadEnabled || !isServerConnected { break }
+                if let (book, data, notes) = result {
+                    autoDownloadActiveTitle = book.title
+                    let storeFormat: BookFormat = (book.format == .article) ? .pdf : book.format
+                    if let url = try? await store.storeOfflineBookData(data, bookId: book.id, format: storeFormat) {
+                        var updated = book
+                        updated.isOfflineCached = true
+                        updated.localFilePath = url.path
+                        updated.bytes = Int64(data.count)
+                        try? await store.upsertBooks([updated])
+                        if !notes.isEmpty {
+                            try? await store.saveMarginNotes(bookId: book.id, notes: notes)
+                            for note in notes {
+                                if let asset = note.image, !asset.isEmpty,
+                                   let assetURL = HomeLibraryClient.noteAssetURL(baseURL: baseURL, bookId: book.id, asset: asset) {
+                                    await AssetImageCache.shared.prefetchNoteAsset(url: assetURL, bookId: book.id, asset: asset)
+                                }
+                            }
+                        }
+                        if !AssetImageCache.shared.hasDiskCover(forBookId: book.id) {
+                            await AssetImageCache.shared.extractLocalCoverIfMissing(bookId: book.id, fileURL: url, format: storeFormat)
+                        }
+                        autoDownloadedCount += 1
+                        dirtySinceRefresh += 1
+                    }
+                }
+                if dirtySinceRefresh >= 3 {
+                    dirtySinceRefresh = 0
+                    books = Self.visibleLibraryBooks(from: (try? await store.listBooks()) ?? books)
+                    rebuildShelves()
+                    currentBytes = await store.cachedBookBytes()
+                    offlineBytes = currentBytes
+                }
+                if nextIdx < queue.count && !Task.isCancelled && autoDownloadEnabled && isServerConnected {
+                    let book = queue[nextIdx]
+                    nextIdx += 1
+                    group.addTask {
+                        do {
+                            let data = try await HomeLibraryClient.downloadBook(baseURL: baseURL, bookId: book.id)
+                            guard Self.isValidPayload(data, format: book.format == .article ? .pdf : book.format) else {
+                                return nil
+                            }
+                            let notes: [MarginNote]
+                            if book.notesVersion != nil {
+                                notes = (try? await HomeLibraryClient.fetchMarginNotes(baseURL: baseURL, bookId: book.id)) ?? []
+                            } else {
+                                notes = []
+                            }
+                            return (book, data, notes)
+                        } catch {
+                            return nil
+                        }
+                    }
+                }
+            }
+        }
+        autoDownloadActiveTitle = nil
+        if dirtySinceRefresh > 0 {
+            books = Self.visibleLibraryBooks(from: (try? await store.listBooks()) ?? books)
+            rebuildShelves()
+            offlineBytes = await store.cachedBookBytes()
         }
     }
 
@@ -948,6 +1168,10 @@ public final class ReaderViewModel {
         openBookTask?.cancel()
         openBookTask = nil
         openingBookId = nil
+        cachedChapterKey = ""
+        cachedChapterValue = nil
+        cachedChapterHTMLKey = ""
+        cachedChapterHTMLValue = ""
         pdfSearchTask?.cancel()
         pendingPDFStamps = []
         selectedStampId = nil
@@ -978,6 +1202,7 @@ public final class ReaderViewModel {
     }
 
     public func openBook(_ book: BookItem, switchTab: Bool = true) async {
+        prefetchScheduleTask?.cancel()
         autoDownloadTask?.cancel()
         autoDownloadActiveTitle = nil
         openBookTask?.cancel()
@@ -991,6 +1216,10 @@ public final class ReaderViewModel {
         isReaderChromeHidden = false
         activeSelectionText = ""
         activeBook = book
+        cachedChapterKey = ""
+        cachedChapterValue = nil
+        cachedChapterHTMLKey = ""
+        cachedChapterHTMLValue = ""
         upsertOpenTab(for: book)
         activeEPUB = nil
         activePDFURL = nil
@@ -1040,12 +1269,15 @@ public final class ReaderViewModel {
             defer {
                 if self.openBookGeneration == generation {
                     self.openingBookId = nil
+                    if self.autoDownloadEnabled && self.isServerConnected && !Task.isCancelled {
+                        self.scheduleBackgroundPrefetch(delaySeconds: 1.5)
+                    }
                 }
             }
             guard !Task.isCancelled, self.openBookGeneration == generation else { return }
 
-            if let localPath = book.localFilePath, FileManager.default.fileExists(atPath: localPath) {
-                let url = URL(fileURLWithPath: localPath)
+            let resolvedOffline = self.store.resolveOfflineFileURL(bookId: book.id, format: book.format, storedPath: book.localFilePath)
+            if let url = resolvedOffline {
                 await self.loadLocalDocument(url: url, book: book, generation: generation)
             } else if let mirrorURL = self.localMirrorFileURL(for: book) {
                 await self.loadLocalDocument(url: mirrorURL, book: book, generation: generation)
@@ -1071,11 +1303,7 @@ public final class ReaderViewModel {
 
             guard !Task.isCancelled, self.openBookGeneration == generation else { return }
             if self.activeNotes.isEmpty && book.source == .homeServer && book.notesVersion != nil && self.isServerConnected && !self.serverURL.isEmpty {
-                let notes = (try? await HomeLibraryClient.fetchMarginNotes(baseURL: self.serverURL, bookId: book.id)) ?? []
-                if !notes.isEmpty && self.openBookGeneration == generation {
-                    try? await self.store.saveMarginNotes(bookId: book.id, notes: notes)
-                    self.activeNotes = notes
-                }
+                await self.cacheMarginNotesAndAssets(for: book)
             }
         }
         openBookTask = task
@@ -1290,12 +1518,29 @@ public final class ReaderViewModel {
     }
 
     public func currentChapter() -> EPUBChapter? {
-        activeEPUB?.chapter(at: activeEPUBSpineIndex)
+        guard let epub = activeEPUB else {
+            cachedChapterKey = ""
+            cachedChapterValue = nil
+            return nil
+        }
+        let key = "\(activeBook?.id ?? ""):\(activeEPUBSpineIndex):\(epub.spineHrefs.count)"
+        if cachedChapterKey == key, let cached = cachedChapterValue {
+            return cached
+        }
+        let ch = epub.chapter(at: activeEPUBSpineIndex)
+        cachedChapterKey = key
+        cachedChapterValue = ch
+        return ch
     }
 
     public func currentChapterHTML(resolvedTheme: ReaderTheme? = nil) -> String {
-        guard let chapter = currentChapter(),
-              let raw = String(data: chapter.xhtmlData, encoding: .utf8) ?? String(data: chapter.xhtmlData, encoding: .isoLatin1) else {
+        guard let chapter = currentChapter() else { return "" }
+        let themeKey = resolvedTheme?.rawValue ?? typography.theme.rawValue
+        let key = "\(activeBook?.id ?? ""):\(chapter.index):\(themeKey):\(typography.readingFlow.rawValue):\(typography.fontFamily.rawValue):\(Int(typography.fontSize)):\(String(format: "%.2f", typography.lineHeight)):\(typography.marginWidth.rawValue):\(typography.textAlignment.rawValue):\(activeNotes.count):\(activeHighlights.count)"
+        if cachedChapterHTMLKey == key, !cachedChapterHTMLValue.isEmpty {
+            return cachedChapterHTMLValue
+        }
+        guard let raw = String(data: chapter.xhtmlData, encoding: .utf8) ?? String(data: chapter.xhtmlData, encoding: .isoLatin1) else {
             return ""
         }
         let chapterNotes = activeNotes.filter { $0.spine == chapter.index }
@@ -1303,7 +1548,7 @@ public final class ReaderViewModel {
         let loc = activeBook?.locator
         let frac = (loc?.spine == chapter.index) ? (loc?.fraction ?? 0) : 0
         let word = (loc?.spine == chapter.index) ? loc?.wordOffset : nil
-        return EPUBHTMLComposer.composeChapterHTML(
+        let html = EPUBHTMLComposer.composeChapterHTML(
             rawXHTML: raw,
             typography: typography,
             notes: chapterNotes,
@@ -1312,6 +1557,9 @@ public final class ReaderViewModel {
             resolvedTheme: resolvedTheme,
             highlights: chapterHighlights
         )
+        cachedChapterHTMLKey = key
+        cachedChapterHTMLValue = html
+        return html
     }
 
     public func selectEPUBSpine(_ index: Int, startAtEnd: Bool = false) async {
@@ -1653,6 +1901,14 @@ public final class ReaderViewModel {
     public func recordProgress(spine: Int, fraction: Double, wordOffset: Int?, pageIndex: Int?) async {
         guard var book = activeBook else { return }
         let elapsed = max(0, Int(Date().timeIntervalSince(readingStartAt)))
+        if let prev = book.locator,
+           prev.spine == spine,
+           prev.pageIndex == pageIndex,
+           prev.wordOffset == wordOffset,
+           abs(prev.fraction - fraction) < 0.004,
+           elapsed < 5 {
+            return
+        }
         readingStartAt = Date()
         let spineCount = activeEPUB?.spineHrefs.count ?? activePDFMetadata?.pageCount ?? book.locator?.spineCount
         let overall: Double? = {
@@ -1747,7 +2003,7 @@ public final class ReaderViewModel {
                 lastOpenedAt: Date()
             )
             try await store.upsertBooks([item])
-            books = visibleLibraryBooks(from: try await store.listBooks())
+            books = Self.visibleLibraryBooks(from: try await store.listBooks())
             rebuildShelves()
             offlineBytes = await store.cachedBookBytes()
             await openBook(item, switchTab: true)
@@ -1773,18 +2029,21 @@ public final class ReaderViewModel {
         do {
             try Task.checkCancellation()
             let data: Data
+            let storeFormat: BookFormat = (book.format == .article) ? .pdf : book.format
             if book.source == .homeServer && !serverURL.isEmpty {
                 data = try await HomeLibraryClient.downloadBook(baseURL: serverURL, bookId: book.id)
+                guard Self.isValidPayload(data, format: storeFormat) else {
+                    throw HomeLibraryError.emptyPayload
+                }
                 if book.notesVersion != nil {
-                    let notes = (try? await HomeLibraryClient.fetchMarginNotes(baseURL: serverURL, bookId: book.id)) ?? []
-                    if !notes.isEmpty {
-                        try await store.saveMarginNotes(bookId: book.id, notes: notes)
-                        if activeBook?.id == book.id { activeNotes = notes }
-                    }
+                    await cacheMarginNotesAndAssets(for: book)
                 }
             } else if let cid = book.canonicalId,
-                      let dlURL = URL(string: book.epubURL ?? "") ?? OpenAccessResolver.directDownloadURL(for: cid) {
+                      let dlURL = URL(string: book.epubURL ?? "") ?? URL(string: book.openAccessURL ?? "") ?? OpenAccessResolver.directDownloadURL(for: cid) {
                 let (oaData, _) = try await URLSession.shared.data(from: dlURL)
+                guard Self.isValidPayload(oaData, format: storeFormat) else {
+                    throw HomeLibraryError.emptyPayload
+                }
                 data = oaData
             } else if book.canonicalId == "gutenberg:84" {
                 data = try SampleShowcaseEPUB.buildFrankensteinSampleData()
@@ -1793,17 +2052,20 @@ public final class ReaderViewModel {
             }
 
             try Task.checkCancellation()
-            let url = try await store.storeOfflineBookData(data, bookId: book.id, format: book.format == .article ? .pdf : book.format)
+            let url = try await store.storeOfflineBookData(data, bookId: book.id, format: storeFormat)
             var updated = book
             updated.isOfflineCached = true
             updated.localFilePath = url.path
             updated.bytes = Int64(data.count)
             try await store.upsertBooks([updated])
-            books = visibleLibraryBooks(from: try await store.listBooks())
+            books = Self.visibleLibraryBooks(from: try await store.listBooks())
             rebuildShelves()
             offlineBytes = await store.cachedBookBytes()
             if activeBook?.id == book.id {
                 activeBook = books.first(where: { $0.id == book.id }) ?? updated
+            }
+            if !AssetImageCache.shared.hasDiskCover(forBookId: book.id) {
+                await AssetImageCache.shared.extractLocalCoverIfMissing(bookId: book.id, fileURL: url, format: storeFormat)
             }
         } catch is CancellationError {
             return
@@ -1827,7 +2089,7 @@ public final class ReaderViewModel {
     public func evictOfflineBook(_ book: BookItem) async {
         do {
             try await store.evictOfflineBook(bookId: book.id)
-            books = visibleLibraryBooks(from: try await store.listBooks())
+            books = Self.visibleLibraryBooks(from: try await store.listBooks())
             rebuildShelves()
             offlineBytes = await store.cachedBookBytes()
             if activeBook?.id == book.id {
@@ -1840,11 +2102,12 @@ public final class ReaderViewModel {
     }
 
     public func clearOfflineCache() async {
+        prefetchScheduleTask?.cancel()
         autoDownloadTask?.cancel()
         autoDownloadActiveTitle = nil
         do {
             try await store.evictAllCachedRemoteBooks()
-            books = visibleLibraryBooks(from: try await store.listBooks())
+            books = Self.visibleLibraryBooks(from: try await store.listBooks())
             rebuildShelves()
             offlineBytes = await store.cachedBookBytes()
             if activeBook?.source != .localImport {
@@ -1857,6 +2120,7 @@ public final class ReaderViewModel {
     }
 
     public func triggerManualPrefetch() {
+        prefetchScheduleTask?.cancel()
         autoDownloadTask?.cancel()
         autoDownloadTask = Task { await self.prefetchLikelyReads() }
     }
@@ -1877,27 +2141,45 @@ public final class ReaderViewModel {
         transitionSheet(to: .cohortDraft(draft))
     }
 
-    public func sendDraftToCohort(_ draft: CohortCardDraft, note: String) async -> URL? {
-        guard let book = activeBook else { return nil }
-        let highlight = ReadingHighlight(
+    public func sendDraftToCohort(
+        _ draft: CohortCardDraft,
+        note: String,
+        dropDirectory: URL? = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("CohortReader/cohort-handoff", isDirectory: true),
+        open: @MainActor (URL) async -> Bool
+    ) async {
+        guard let book = activeBook, book.id == draft.sourceBookId else { return }
+        var seed = draft
+        if !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { seed.promptHint = note }
+        var highlight = ReadingHighlight(
             bookId: book.id,
             canonicalId: book.canonicalId,
             bookTitle: book.title,
             spine: activePDFURL != nil ? activePDFPageIndex : activeEPUBSpineIndex,
             quote: draft.quote,
-            note: note,
-            sentToCohort: true
+            note: note
         )
-        try? await store.saveHighlight(highlight)
-        activeHighlights = (try? await store.listHighlights(bookId: book.id)) ?? activeHighlights
-        activeSheet = nil
-
-        if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            let dropDir = appSupport.appendingPathComponent("CohortReader/cohort-handoff", isDirectory: true)
-            _ = try? CohortHandoff.writeDropFile(for: draft, in: dropDir)
+        do {
+            try await store.saveHighlight(highlight)
+            if let dropDirectory {
+                _ = try? CohortHandoff.writeDropFile(for: seed, in: dropDirectory)
+            }
+            if let url = CohortHandoff.makeDraftURL(for: seed), await open(url) {
+                highlight.sentToCohort = true
+                try await store.saveHighlight(highlight)
+                showToast("Opened draft in Cohort")
+            } else {
+                showToast("Highlight saved. Cohort could not open the draft.")
+            }
+            if activeBook?.id == book.id {
+                activeHighlights = try await store.listHighlights(bookId: book.id)
+            }
+            if case .cohortDraft(let presented) = activeSheet, presented == draft {
+                activeSheet = nil
+            }
+        } catch {
+            bannerError = error.localizedDescription
         }
-        lastHandoffMessage = "Staged card seed for Cohort (\(draft.sourceTitle))"
-        return CohortHandoff.makeDraftURL(for: draft)
     }
 
     // MARK: - Manifold & Home Server Sync
@@ -1946,7 +2228,7 @@ public final class ReaderViewModel {
                     _ = try? await store.saveLocator(bookId: item.id, locator: loc, enqueueSync: false)
                 }
             }
-            books = visibleLibraryBooks(from: try await store.listBooks())
+            books = Self.visibleLibraryBooks(from: try await store.listBooks())
             rebuildShelves()
         } catch {
             // Retain existing client-side title matching if server lacks /api/match
@@ -1997,13 +2279,16 @@ public final class ReaderViewModel {
             let name = try await HomeLibraryClient.signIn(baseURL: clean, password: serverPassphrase)
             let catalog = try await HomeLibraryClient.fetchHome(baseURL: clean)
             try await store.upsertBooks(catalog.items)
+            if !catalog.items.isEmpty {
+                try? await store.pruneShowcaseBooks()
+            }
             for item in catalog.items {
                 if let loc = item.locator {
                     _ = try? await store.saveLocator(bookId: item.id, locator: loc, enqueueSync: false)
                 }
             }
             let prevActiveLoc = activeBook?.locator
-            books = visibleLibraryBooks(from: try await store.listBooks())
+            books = Self.visibleLibraryBooks(from: try await store.listBooks())
             if let activeId = activeBook?.id, let refreshed = books.first(where: { $0.id == activeId }) {
                 activeBook = refreshed
                 if let newLoc = refreshed.locator,
@@ -2025,15 +2310,35 @@ public final class ReaderViewModel {
             await flushProgressOutbox()
             await syncHighlightsWithServer()
             await syncSignaturesWithServer()
-            await syncManifoldOwnershipWithServer()
-            if !manifoldSyncedOnce {
+
+            if let space = try? await HomeLibraryClient.fetchSpace(baseURL: clean, limit: 400),
+               !space.works.isEmpty {
+                manifoldWorks = space.works
+                serverOwnedWorkIds = space.slugByWorkId
+                if !space.lenses.isEmpty {
+                    lenses = space.lenses
+                    if !lenses.contains(where: { $0.id == selectedLensId }), let first = lenses.first {
+                        selectedLensId = first.id
+                    }
+                }
+                if let active = activeBook, let match = manifoldWork(for: active) {
+                    selectedMapWorkId = match.workId
+                } else if !manifoldWorks.contains(where: { $0.workId == selectedMapWorkId }),
+                          let firstWork = manifoldWorks.first {
+                    selectedMapWorkId = firstWork.workId
+                }
                 manifoldSyncedOnce = true
-                Task { await self.refreshManifold(silent: true) }
+            } else {
+                await syncManifoldOwnershipWithServer()
+                if !manifoldSyncedOnce {
+                    manifoldSyncedOnce = true
+                    Task { await self.refreshManifold(silent: true) }
+                }
             }
-            if autoDownloadEnabled {
-                autoDownloadTask?.cancel()
-                autoDownloadTask = Task { await self.prefetchLikelyReads() }
-            }
+
+            prefetchScheduleTask?.cancel()
+            autoDownloadTask?.cancel()
+            autoDownloadTask = Task { await self.prefetchLikelyReads() }
         } catch {
             isServerConnected = false
             serverStatusMessage = "Disconnected"
@@ -2457,12 +2762,26 @@ public final class ReaderViewModel {
         totalPages: Int,
         colsPerView: Int
     ) {
-        epubTotalSpreads = max(1, totalSpreads)
-        epubCurrentSpread = min(max(1, spread), epubTotalSpreads)
-        epubTotalPages = max(1, totalPages)
-        epubCurrentPage = min(max(1, page), epubTotalPages)
-        epubCurrentPageEnd = min(max(epubCurrentPage, pageEnd), epubTotalPages)
-        epubColumnsPerSpread = max(1, colsPerView)
+        let clampedTotalSpreads = max(1, totalSpreads)
+        let clampedSpread = min(max(1, spread), clampedTotalSpreads)
+        let clampedTotalPages = max(1, totalPages)
+        let clampedPage = min(max(1, page), clampedTotalPages)
+        let clampedPageEnd = min(max(clampedPage, pageEnd), clampedTotalPages)
+        let clampedCols = max(1, colsPerView)
+        if epubTotalSpreads == clampedTotalSpreads
+            && epubCurrentSpread == clampedSpread
+            && epubTotalPages == clampedTotalPages
+            && epubCurrentPage == clampedPage
+            && epubCurrentPageEnd == clampedPageEnd
+            && epubColumnsPerSpread == clampedCols {
+            return
+        }
+        epubTotalSpreads = clampedTotalSpreads
+        epubCurrentSpread = clampedSpread
+        epubTotalPages = clampedTotalPages
+        epubCurrentPage = clampedPage
+        epubCurrentPageEnd = clampedPageEnd
+        epubColumnsPerSpread = clampedCols
     }
 
     public func stepEPUBPage(delta: Int) {

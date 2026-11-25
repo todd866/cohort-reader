@@ -11,7 +11,7 @@ Cohort Reader distributes **zero copyrighted books**. Cold launches work immedia
    - **Native PDF (`PDFKit`) & clean-room EPUB (`zlib` + `WKWebView`):** No GPL dependencies. Paper, Sepia, and Ink reading themes, typography controls, and tabular reading telemetry.
    - **Offline Margin Notes:** Anchored verbatim passages inside nonfiction/science chapters open Wikipedia context and Natural Earth locator maps offline.
    - **Exact-Word Locator Sync:** Monotonic `{spine, fraction, wordOffset, updatedAt}` merge with 1-tap offline caching (`isExcludedFromBackup = true`) for flights and instant local storage eviction.
-   - **Cohort Handoff:** Send any highlight or passage straight into [Cohort](https://cohort.md) (`cohort://draft?...`) as an active-recall card seed, and inspect cross-domain resonances between books, papers, and USMLE/clinical concepts.
+   - **Cohort Handoff:** Send any highlight or passage straight into [Cohort](https://cohort.md) (`cohort-study://draft?...`) as an active-recall card seed, and inspect cross-domain resonances between books, papers, and USMLE/clinical concepts.
 3. **You + Your AI Backend (`examples/byo-backend/`):** Zero-dependency Python starter server turning any folder of `.epub`/`.pdf` files into a range-streaming, passphrase-protected Home Library Server.
 
 ## Quick Start

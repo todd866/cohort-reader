@@ -112,3 +112,5 @@ To enrich your private books and papers without revealing your filenames or read
 1. Extract `isbn:`, `doi:`, `pmid:`, `arxiv:`, `ol:`, or `gutenberg:` locally from OPF metadata or PDF front-matter.
 2. Compute `prefix = sha256(workId)[:2]` (lowercase hex).
 3. Request `GET https://manifold-chi.vercel.app/api/v1/shard/<prefix>?domain=reader` and join vectors locally in memory.
+
+For the PaperLibrary service on the M2, `tailscale serve --bg --https=8445 http://127.0.0.1:8696` exposes the loopback server to the tailnet. Its passphrase is configured in `~/.config/cohort-reader/server.env` (mode 600).

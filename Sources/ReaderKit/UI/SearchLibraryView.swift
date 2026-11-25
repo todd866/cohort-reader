@@ -6,7 +6,23 @@ public struct SearchLibraryView: View {
     @Environment(\.readerSnapshotMode) private var isSnapshot
     @Bindable public var vm: ReaderViewModel
 
-    private let suggestedTopics = ["Statecraft", "Neuroscience", "Systems", "History", "Literature", "Biology"]
+    private var suggestedTopics: [String] {
+        let excluded: Set<String> = ["All", "Reading", "Reading Now", "Downloaded", "Offline", "General", "Library", "Paper", "Showcase", "Open Showcase", "Imported"]
+        if vm.hasRealLibrary {
+            var topics: [String] = []
+            for s in vm.shelves where !s.title.isEmpty && !excluded.contains(s.title) && !topics.contains(s.title) {
+                topics.append(s.title)
+            }
+            let genreCounts = Dictionary(grouping: vm.books.map(\.genre).filter { !$0.isEmpty && !excluded.contains($0) }) { $0 }
+            for (g, _) in genreCounts.sorted(by: { $0.value.count > $1.value.count }) where !topics.contains(g) {
+                topics.append(g)
+            }
+            if !topics.isEmpty {
+                return Array(topics.prefix(7))
+            }
+        }
+        return ["Statecraft", "Neuroscience", "Systems", "History", "Literature", "Biology"]
+    }
 
     public init(vm: ReaderViewModel) {
         self.vm = vm
@@ -40,7 +56,9 @@ public struct SearchLibraryView: View {
     private var beyondShelfResults: [ManifoldReaderWork] {
         let q = vm.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let pool = vm.recommendedDiscoveryWorks
-        guard !q.isEmpty else { return Array(pool.prefix(12)) }
+        if q.isEmpty {
+            return vm.hasRealLibrary ? [] : Array(pool.prefix(12))
+        }
         return pool.filter {
             $0.title.lowercased().contains(q)
                 || $0.creator.lowercased().contains(q)
@@ -286,7 +304,7 @@ public struct SearchLibraryView: View {
                                             .foregroundStyle(ReaderPalette.secondary)
                                             .monospacedDigit()
                                     }
-                                    if work.epubURL != nil || work.openAccessURL != nil {
+                                    if work.isDirectlyDownloadable {
                                         Text("Open")
                                             .font(.system(size: 10.5, weight: .medium))
                                             .foregroundStyle(ReaderPalette.accent)
@@ -326,8 +344,21 @@ public struct SettingsSheet: View {
     }
 
     private var budgetUsageRatio: Double {
+        if vm.autoDownloadBudgetMB <= 0 {
+            let total = max(1, vm.books.count)
+            let cached = vm.books.filter(\.isOfflineCached).count
+            return min(max(Double(cached) / Double(total), 0), 1)
+        }
         let budget = Double(max(1, vm.autoDownloadBudgetMB)) * 1024 * 1024
         return min(max(Double(vm.offlineBytes) / budget, 0), 1)
+    }
+
+    private var budgetLabel: String {
+        if vm.autoDownloadBudgetMB <= 0 { return "All" }
+        if vm.autoDownloadBudgetMB >= 1024 && vm.autoDownloadBudgetMB % 1024 == 0 {
+            return "\(vm.autoDownloadBudgetMB / 1024) GB"
+        }
+        return "\(vm.autoDownloadBudgetMB) MB"
     }
 
     public var body: some View {
@@ -352,17 +383,20 @@ public struct SettingsSheet: View {
                     }
 
                     Section("Offline Downloads") {
-                        Toggle("Auto-download likely reads", isOn: $vm.autoDownloadEnabled)
+                        Toggle("Auto-download offline library", isOn: $vm.autoDownloadEnabled)
                         Picker("Storage budget", selection: $vm.autoDownloadBudgetMB) {
-                            Text("150 MB").tag(150)
-                            Text("350 MB").tag(350)
-                            Text("750 MB").tag(750)
+                            Text("500 MB").tag(500)
+                            Text("1 GB").tag(1024)
+                            Text("2 GB").tag(2048)
+                            Text("4 GB").tag(4096)
+                            Text("All (Unlimited)").tag(0)
                         }
                         VStack(alignment: .leading, spacing: 6) {
                             HStack {
                                 Text("Cached offline")
                                 Spacer()
-                                Text("\(formatBytes(vm.offlineBytes)) / \(vm.autoDownloadBudgetMB) MB")
+                                let cachedCount = vm.books.filter(\.isOfflineCached).count
+                                Text("\(cachedCount)/\(vm.books.count) · \(formatBytes(vm.offlineBytes)) / \(budgetLabel)")
                                     .font(.system(size: 12, design: .monospaced))
                                     .foregroundStyle(ReaderPalette.secondary)
                                     .monospacedDigit()
@@ -475,12 +509,13 @@ public struct SettingsSheet: View {
             }
 
             settingsCard("Offline Downloads") {
-                settingsFieldRow("Auto-download likely reads", value: vm.autoDownloadEnabled ? "On" : "Off", isPlaceholder: false)
+                settingsFieldRow("Auto-download offline library", value: vm.autoDownloadEnabled ? "On" : "Off", isPlaceholder: false)
                 Divider()
-                settingsFieldRow("Storage budget", value: "\(vm.autoDownloadBudgetMB) MB", isPlaceholder: false)
+                settingsFieldRow("Storage budget", value: budgetLabel, isPlaceholder: false)
                 Divider()
                 VStack(alignment: .leading, spacing: 6) {
-                    settingsFieldRow("Cached offline", value: "\(formatBytes(vm.offlineBytes)) / \(vm.autoDownloadBudgetMB) MB", isPlaceholder: false)
+                    let cachedCount = vm.books.filter(\.isOfflineCached).count
+                    settingsFieldRow("Cached offline", value: "\(cachedCount)/\(vm.books.count) · \(formatBytes(vm.offlineBytes)) / \(budgetLabel)", isPlaceholder: false)
                     InstrumentGauge(ratio: budgetUsageRatio, tint: ReaderPalette.cohortGreen)
                 }
             }

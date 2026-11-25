@@ -20,7 +20,9 @@ public struct DiscoveryDetailSheet: View {
 
     private var owned: BookItem? { vm.ownedBook(for: work) }
     private var isSaved: Bool { vm.wishlistIds.contains(work.workId) }
-    private var isOpenAccess: Bool { work.epubURL != nil || work.openAccessURL != nil }
+    private var isOpenAccess: Bool { work.isDirectlyDownloadable }
+    private var isWebEditionOnly: Bool { !isOpenAccess && work.openAccessURL != nil }
+    private var validResonances: [ResonanceLink] { work.resonances.filter(\.isValidEditorialResonance) }
     private var workById: [String: ManifoldReaderWork] {
         Dictionary(uniqueKeysWithValues: vm.manifoldWorks.map { ($0.workId, $0) })
     }
@@ -80,7 +82,7 @@ public struct DiscoveryDetailSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             if includeTopClose {
                 HStack {
-                    Text(isOpenAccess ? "Open edition" : "Beyond your shelf")
+                    Text(isOpenAccess ? "Open edition" : (isWebEditionOnly ? "Web edition" : "Beyond your shelf"))
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(ReaderPalette.secondary)
                     Spacer()
@@ -97,11 +99,12 @@ public struct DiscoveryDetailSheet: View {
             // Cover + Title + Hook Hero
             HStack(alignment: .top, spacing: 14) {
                 BookCoverView(
-                    book: work.toBookItem(),
-                    serverURL: "",
+                    book: owned ?? work.toBookItem(),
+                    serverURL: owned != nil ? vm.serverURL : "",
                     width: 92,
                     height: 138,
-                    isSnapshot: isSnapshot
+                    isSnapshot: isSnapshot,
+                    reloadToken: vm.isServerConnected
                 )
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -116,10 +119,10 @@ public struct DiscoveryDetailSheet: View {
                         .fixedSize(horizontal: false, vertical: true)
 
                     HStack(spacing: 6) {
-                        Image(systemName: owned != nil ? "checkmark.circle.fill" : (isOpenAccess ? "arrow.down.circle" : "books.vertical"))
+                        Image(systemName: owned != nil ? "checkmark.circle.fill" : (isOpenAccess ? "arrow.down.circle" : (isWebEditionOnly ? "globe" : "books.vertical")))
                             .font(.system(size: 11))
                             .foregroundStyle(owned != nil ? ReaderPalette.cohortGreen : (isOpenAccess ? ReaderPalette.accent : ReaderPalette.tvAmber))
-                        Text(owned != nil ? "In your library" : (isOpenAccess ? "Open access" : "Source yourself (BYO)"))
+                        Text(owned != nil ? "In your library" : (isOpenAccess ? "Open download" : (isWebEditionOnly ? "Web article" : "Beyond your shelf")))
                             .font(.system(size: 11.5, weight: .medium))
                             .foregroundStyle(owned != nil ? ReaderPalette.cohortGreen : (isOpenAccess ? ReaderPalette.accent : ReaderPalette.tvAmber))
                     }
@@ -289,14 +292,15 @@ public struct DiscoveryDetailSheet: View {
                 }
             }
 
-            if !work.resonances.isEmpty {
+            let shownResonances = Array(validResonances.prefix(3))
+            if !shownResonances.isEmpty {
                 Divider()
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Across Film, Music & Study")
                         .font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(ReaderPalette.label)
 
-                    ForEach(work.resonances.prefix(3)) { res in
+                    ForEach(shownResonances) { res in
                         HStack(spacing: 8) {
                             Circle()
                                 .fill(ReaderPalette.domainColor(res.domain))

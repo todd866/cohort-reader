@@ -86,8 +86,13 @@ public enum ManifoldReaderClient {
         let works = wEnv.works
             .filter { $0.domain == "reader" }
             .map { raw in
-            let resLinks = (raw.resonances ?? []).map {
-                ResonanceLink(workId: $0.workId, domain: $0.domain, title: $0.title ?? $0.workId, sim: $0.sim)
+            let resLinks = (raw.resonances ?? []).compactMap { res -> ResonanceLink? in
+                guard let rawTitle = res.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !rawTitle.isEmpty else {
+                    return nil
+                }
+                let link = ResonanceLink(workId: res.workId, domain: res.domain, title: rawTitle, sim: res.sim)
+                return link.isValidEditorialResonance ? link : nil
             }
             return ManifoldReaderWork(
                 workId: raw.workId,
@@ -143,8 +148,13 @@ public enum ManifoldReaderClient {
         let works = env.works
             .filter { $0.domain == "reader" }
             .map { raw in
-            let resLinks = (raw.resonances ?? []).map {
-                ResonanceLink(workId: $0.workId, domain: $0.domain, title: $0.title ?? $0.workId, sim: $0.sim)
+            let resLinks = (raw.resonances ?? []).compactMap { res -> ResonanceLink? in
+                guard let rawTitle = res.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !rawTitle.isEmpty else {
+                    return nil
+                }
+                let link = ResonanceLink(workId: res.workId, domain: res.domain, title: rawTitle, sim: res.sim)
+                return link.isValidEditorialResonance ? link : nil
             }
             return ManifoldReaderWork(
                 workId: raw.workId,

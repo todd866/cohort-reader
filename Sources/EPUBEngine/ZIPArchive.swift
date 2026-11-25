@@ -59,7 +59,12 @@ public enum ZIPArchive {
         return try read(from: data, limits: limits)
     }
 
-    public static func read(from archiveData: Data, limits: ZipLimits = .default) throws -> [String: Data] {
+    public static func read(from data: Data, limits: ZipLimits = .default) throws -> [String: Data] {
+        guard limits.maxEntries >= 0, limits.maxEntryBytes >= 0, limits.maxTotalBytes >= 0,
+              limits.maxCompressionRatio > 0 else {
+            throw ZipError.limitExceeded("Invalid ZIP limits")
+        }
+        let archiveData = data.startIndex == 0 ? data : Data(data)
         guard archiveData.count >= 22 else {
             throw ZipError.invalidArchive("Archive shorter than EOCD")
         }
@@ -69,23 +74,27 @@ public enum ZIPArchive {
         var entryCount = UInt64(readUInt16(archiveData, at: eocdOffset + 10))
 
         if eocdOffset >= 20, readUInt32(archiveData, at: eocdOffset - 20) == 0x0706_4b50 {
-            let z64Offset = Int(readUInt64(archiveData, at: eocdOffset - 12))
-            if z64Offset >= 0 && z64Offset + 56 <= archiveData.count && readUInt32(archiveData, at: z64Offset) == 0x0606_4b50 {
-                if entryCount == 0xFFFF { entryCount = readUInt64(archiveData, at: z64Offset + 32) }
-                if cdOffset == 0xFFFF_FFFF { cdOffset = readUInt64(archiveData, at: z64Offset + 48) }
+            guard let z64Offset = Int(exactly: readUInt64(archiveData, at: eocdOffset - 12)),
+                  z64Offset <= archiveData.count - 56,
+                  readUInt32(archiveData, at: z64Offset) == 0x0606_4b50 else {
+                throw ZipError.invalidArchive("Invalid ZIP64 end record")
             }
+            if entryCount == 0xFFFF { entryCount = readUInt64(archiveData, at: z64Offset + 32) }
+            if cdOffset == 0xFFFF_FFFF { cdOffset = readUInt64(archiveData, at: z64Offset + 48) }
         }
 
         guard entryCount <= UInt64(limits.maxEntries) else {
             throw ZipError.limitExceeded("Entry count \(entryCount) exceeds maximum")
         }
 
-        var cursor = Int(cdOffset)
+        guard var cursor = Int(exactly: cdOffset), cursor <= archiveData.count else {
+            throw ZipError.invalidArchive("Central directory offset outside archive")
+        }
         var result: [String: Data] = [:]
         var totalDecoded = 0
 
         for _ in 0..<Int(entryCount) {
-            guard cursor + 46 <= archiveData.count, readUInt32(archiveData, at: cursor) == 0x0201_4b50 else {
+            guard cursor <= archiveData.count - 46, readUInt32(archiveData, at: cursor) == 0x0201_4b50 else {
                 throw ZipError.invalidArchive("Corrupt central directory header")
             }
 
@@ -147,25 +156,30 @@ public enum ZIPArchive {
             }
             totalDecoded += decodedCount
 
-            let lfh = Int(localHeaderOffset)
-            guard lfh + 30 <= archiveData.count, readUInt32(archiveData, at: lfh) == 0x0403_4b50 else {
+            guard let lfh = Int(exactly: localHeaderOffset), lfh <= archiveData.count - 30, readUInt32(archiveData, at: lfh) == 0x0403_4b50 else {
                 throw ZipError.invalidArchive("Missing local file header for \(path)")
             }
             let lfhNameLen = Int(readUInt16(archiveData, at: lfh + 26))
             let lfhExtraLen = Int(readUInt16(archiveData, at: lfh + 28))
             let dataStart = lfh + 30 + lfhNameLen + lfhExtraLen
-            let dataEnd = dataStart + Int(compressedSize)
-            guard dataEnd <= archiveData.count else {
+            guard dataStart <= archiveData.count, compressedSize <= UInt64(archiveData.count - dataStart) else {
                 throw ZipError.invalidArchive("Truncated payload for \(path)")
             }
 
+            if method == 0 && compressedSize != uncompressedSize {
+                throw ZipError.invalidArchive("Stored entry size mismatch")
+            }
+            guard compressedSize <= UInt64(uInt.max), uncompressedSize <= UInt64(uInt.max) else {
+                throw ZipError.limitExceeded("Entry exceeds the ZIP codec size limit")
+            }
+            let dataEnd = dataStart + Int(compressedSize)
             let rawPayload = Data(archiveData[dataStart..<dataEnd])
             let decoded: Data
             switch method {
             case 0:
                 decoded = rawPayload
             case 8:
-                decoded = try inflateRaw(rawPayload, maxBytes: limits.maxEntryBytes)
+                decoded = try inflateRaw(rawPayload, maxBytes: decodedCount)
             default:
                 throw ZipError.unsupportedMethod(method)
             }

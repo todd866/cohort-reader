@@ -318,6 +318,30 @@ public struct ResonanceLink: Identifiable, Codable, Sendable, Hashable {
     public var title: String
     public var sim: Double
 
+    private static let blockedDemoTitles: Set<String> = [
+        "big buck bunny",
+        "elephants dream",
+        "sintel",
+        "tears of steel",
+        "cosmos laundromat",
+        "caminandes",
+        "spring",
+    ]
+
+    public var isValidEditorialResonance: Bool {
+        let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return false }
+        let low = clean.lowercased()
+        if low == workId.lowercased()
+            || low.hasPrefix("wikidata:")
+            || low.hasPrefix("imdb:")
+            || low.hasPrefix("mbid:")
+            || low.hasPrefix("tmdb:") {
+            return false
+        }
+        return !Self.blockedDemoTitles.contains(low)
+    }
+
     public init(workId: String, domain: String, title: String, sim: Double) {
         self.workId = workId
         self.domain = domain
@@ -379,6 +403,50 @@ public struct ManifoldReaderWork: Identifiable, Codable, Sendable, Hashable {
         self.resonances = resonances
         self.epubURL = epubURL
         self.openAccessURL = openAccessURL
+    }
+
+    public var directDownloadURL: URL? {
+        if let rawEpub = epubURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawEpub.isEmpty,
+           let url = URL(string: rawEpub),
+           let scheme = url.scheme?.lowercased(),
+           scheme == "https" || scheme == "http" {
+            return url
+        }
+        if workId.hasPrefix("gutenberg:") {
+            let gid = String(workId.dropFirst("gutenberg:".count))
+            if !gid.isEmpty {
+                return URL(string: "https://www.gutenberg.org/ebooks/\(gid).epub3.images")
+            }
+        }
+        if workId.hasPrefix("arxiv:") {
+            let aid = String(workId.dropFirst("arxiv:".count))
+            if !aid.isEmpty {
+                return URL(string: "https://arxiv.org/pdf/\(aid).pdf")
+            }
+        }
+        if let rawOA = openAccessURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawOA.isEmpty,
+           let url = URL(string: rawOA),
+           let scheme = url.scheme?.lowercased(),
+           scheme == "https" || scheme == "http" {
+            let pathLow = url.path.lowercased()
+            let hostLow = (url.host ?? "").lowercased()
+            if pathLow.hasSuffix(".epub") || pathLow.hasSuffix(".pdf") {
+                return url
+            }
+            if hostLow.hasSuffix("arxiv.org") && pathLow.contains("/pdf/") {
+                return url
+            }
+            if hostLow.hasSuffix("gutenberg.org") && pathLow.contains(".epub") {
+                return url
+            }
+        }
+        return nil
+    }
+
+    public var isDirectlyDownloadable: Bool {
+        directDownloadURL != nil
     }
 
     public func toBookItem() -> BookItem {

@@ -353,7 +353,7 @@ public struct ManifoldMapView: View {
                             }
                             .buttonStyle(.plain)
 
-                            Button(owned != nil ? "Read" : ((selected.epubURL != nil || selected.openAccessURL != nil) ? "Get" : "Find")) {
+                            Button(owned != nil ? "Read" : (selected.isDirectlyDownloadable ? "Download" : "Inspect")) {
                                 Task { await vm.openOrInspect(selected) }
                             }
                             .font(.system(size: 12, weight: .semibold))
@@ -367,13 +367,14 @@ public struct ManifoldMapView: View {
                         .background(ReaderPalette.elevated, in: RoundedRectangle(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).stroke(ReaderPalette.hairline, lineWidth: 0.75))
 
-                        if !selected.resonances.isEmpty {
+                        let validResonances = Array(selected.resonances.filter(\.isValidEditorialResonance).prefix(3))
+                        if !validResonances.isEmpty {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("Across Film, Music & Study")
                                     .font(.system(size: 13, weight: .semibold, design: .serif))
                                     .foregroundStyle(ReaderPalette.label)
 
-                                ForEach(selected.resonances.prefix(3)) { res in
+                                ForEach(validResonances) { res in
                                     HStack(spacing: 8) {
                                         Circle()
                                             .fill(ReaderPalette.domainColor(res.domain))

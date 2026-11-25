@@ -78,6 +78,63 @@ public struct HomeLibraryCatalog: Sendable {
     public var items: [BookItem]
 }
 
+public struct HomeLibrarySpace: Sendable {
+    public var model: String
+    public var count: Int
+    public var works: [ManifoldReaderWork]
+    public var lenses: [ReaderLens]
+    public var slugByWorkId: [String: String]
+
+    public init(
+        model: String,
+        count: Int,
+        works: [ManifoldReaderWork],
+        lenses: [ReaderLens],
+        slugByWorkId: [String: String]
+    ) {
+        self.model = model
+        self.count = count
+        self.works = works
+        self.lenses = lenses
+        self.slugByWorkId = slugByWorkId
+    }
+}
+
+private struct WireSpaceResponse: Decodable {
+    struct RawNeighbour: Decodable {
+        var slug: String?
+        var workId: String?
+        var sim: Double
+    }
+    struct RawItem: Decodable {
+        var slug: String
+        var canonicalId: String?
+        var title: String
+        var creator: String?
+        var year: Int?
+        var kind: String?
+        var format: String?
+        var shelves: [String]?
+        var summary: String?
+        var x: Double?
+        var y: Double?
+        var vec32: [Int]?
+        var neighbours: [RawNeighbour]?
+    }
+    struct RawLens: Decodable {
+        var id: String
+        var name: String
+        var summary: String?
+        var issuerHandle: String?
+        var anchors: [LensAnchorItem]
+        var transitions: [LensTransitionItem]?
+    }
+    var model: String?
+    var count: Int?
+    var items: [RawItem]
+    var lenses: [RawLens]?
+}
+
 private struct WireHomeResponse: Decodable {
     var serverName: String?
     var shelves: [LibraryShelf]
@@ -192,10 +249,11 @@ public enum HomeLibraryClient {
 
     public static func fetchHome(
         baseURL: String,
+        limit: Int = 400,
         session: URLSession = .shared
     ) async throws -> HomeLibraryCatalog {
         let clean = ReaderKeychain.normalizedServer(baseURL)
-        guard let url = URL(string: "\(clean)/api/home") else { throw HomeLibraryError.invalidURL }
+        guard let url = URL(string: "\(clean)/api/home?limit=\(max(1, min(600, limit)))") else { throw HomeLibraryError.invalidURL }
         let (data, resp) = try await session.data(from: url)
         try checkHTTP(resp)
         let decoded = try makeDecoder().decode(WireHomeResponse.self, from: data)
@@ -203,6 +261,68 @@ public enum HomeLibraryClient {
             serverName: decoded.serverName ?? "Home Library",
             shelves: decoded.shelves,
             items: decoded.items.map { $0.toBookItem() }
+        )
+    }
+
+    public static func fetchSpace(
+        baseURL: String,
+        limit: Int = 400,
+        session: URLSession = .shared
+    ) async throws -> HomeLibrarySpace {
+        let clean = ReaderKeychain.normalizedServer(baseURL)
+        guard let url = URL(string: "\(clean)/api/space?limit=\(max(1, min(1000, limit)))") else {
+            throw HomeLibraryError.invalidURL
+        }
+        let (data, resp) = try await session.data(from: url)
+        try checkHTTP(resp)
+        let decoded = try makeDecoder().decode(WireSpaceResponse.self, from: data)
+        var works: [ManifoldReaderWork] = []
+        var slugByWorkId: [String: String] = [:]
+        works.reserveCapacity(decoded.items.count)
+        for raw in decoded.items {
+            let wid = (raw.canonicalId?.isEmpty == false) ? raw.canonicalId! : raw.slug
+            slugByWorkId[wid] = raw.slug
+            let nbs: [NeighbourScore] = (raw.neighbours ?? []).compactMap { nb in
+                let targetId = (nb.workId?.isEmpty == false) ? nb.workId! : (nb.slug ?? "")
+                guard !targetId.isEmpty else { return nil }
+                return NeighbourScore(workId: targetId, sim: nb.sim)
+            }
+            let fmt = BookFormat(rawValue: (raw.format ?? "").lowercased()) ?? .epub
+            works.append(
+                ManifoldReaderWork(
+                    workId: wid,
+                    title: raw.title,
+                    creator: raw.creator ?? "Unknown",
+                    year: raw.year ?? 2026,
+                    kind: raw.kind ?? "library",
+                    subject: raw.shelves?.first,
+                    format: fmt,
+                    summary: raw.summary ?? "",
+                    shard: "home",
+                    x: raw.x ?? 0,
+                    y: raw.y ?? 0,
+                    vec32: raw.vec32 ?? [],
+                    neighbours: nbs,
+                    resonances: []
+                )
+            )
+        }
+        let lenses: [ReaderLens] = (decoded.lenses ?? []).map { raw in
+            ReaderLens(
+                id: raw.id,
+                name: raw.name,
+                summary: raw.summary ?? "",
+                issuerHandle: raw.issuerHandle ?? "home.library",
+                anchors: raw.anchors,
+                transitions: raw.transitions ?? []
+            )
+        }
+        return HomeLibrarySpace(
+            model: decoded.model ?? "library",
+            count: decoded.count ?? works.count,
+            works: works,
+            lenses: lenses,
+            slugByWorkId: slugByWorkId
         )
     }
 
